@@ -7,6 +7,7 @@ from tqdm import tqdm
 from typing import NamedTuple
 
 from params import Params
+from configs import configs
 
 sns.set_theme()
 
@@ -169,60 +170,6 @@ def plot_multi_config_comparison(results_dict):
 # ===========================================================
 
 if __name__ == "__main__":
-    # Define multiple configurations to compare
-    configs = [
-        {
-            "name": "Config-1 (baseline)",
-            "params": Params(
-                total_episodes=50_000,
-                learning_rate=0.1,
-                gamma=0.99,
-                epsilon_start=1.0,
-                epsilon_decay=0.99995,
-                epsilon_min=0.05,
-                seed=42,
-                is_rainy=False,
-                fickle_passenger=False,
-                n_runs=1,
-                action_size=6,
-                state_size=500,
-            )
-        },
-        {
-            "name": "Config-2 (faster decay)",
-            "params": Params(
-                total_episodes=50_000,
-                learning_rate=0.1,
-                gamma=0.99,
-                epsilon_start=1.0,
-                epsilon_decay=0.9999,
-                epsilon_min=0.05,
-                seed=42,
-                is_rainy=False,
-                fickle_passenger=False,
-                n_runs=1,
-                action_size=6,
-                state_size=500,
-            )
-        },
-        {
-            "name": "Config-3 (higher LR)",
-            "params": Params(
-                total_episodes=50_000,
-                learning_rate=0.3,
-                gamma=0.99,
-                epsilon_start=1.0,
-                epsilon_decay=0.99995,
-                epsilon_min=0.05,
-                seed=42,
-                is_rainy=False,
-                fickle_passenger=False,
-                n_runs=1,
-                action_size=6,
-                state_size=500,
-            )
-        },
-    ]
 
     # Train each configuration
     results = {}
