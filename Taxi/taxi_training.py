@@ -55,50 +55,47 @@ class EpsilonGreedy:
 # TRAINING FUNCTION
 # ===========================================================
 
-def run_env(env, learner, explorer, params):
-    rewards_log = np.zeros((params.total_episodes, params.n_runs))
-    lengths_log = np.zeros((params.total_episodes, params.n_runs))
-    eps_log = np.zeros((params.total_episodes, params.n_runs))
-    q_change_log = np.zeros((params.total_episodes, params.n_runs))
-    qtables_final = np.zeros((params.n_runs, params.state_size, params.action_size))
+def run_single_config(env, learner, explorer, params, config_name):
+    """Train a single configuration and return logs."""
+    rewards_log = np.zeros(params.total_episodes)
+    lengths_log = np.zeros(params.total_episodes)
+    eps_log = np.zeros(params.total_episodes)
+    q_change_log = np.zeros(params.total_episodes)
 
     # Seed the action space for reproducibility
     env.action_space.seed(params.seed)
     
     episodes = np.arange(params.total_episodes)
 
-    for run in range(params.n_runs):
-        learner.reset_qtable()
-        explorer.epsilon = params.epsilon_start
+    learner.reset_qtable()
+    explorer.epsilon = params.epsilon_start
 
-        for ep in tqdm(episodes, desc=f"Run {run+1}/{params.n_runs}", leave=False):
-            eps_log[ep, run] = explorer.epsilon
-            q_prev = learner.qtable.copy()
+    for ep in tqdm(episodes, desc=f"{config_name}", leave=True):
+        eps_log[ep] = explorer.epsilon
+        q_prev = learner.qtable.copy()
 
-            state, _ = env.reset() #no seed here to have random starts each run
-            done = False
-            total_reward = 0
-            steps = 0
+        state, _ = env.reset()
+        done = False
+        total_reward = 0
+        steps = 0
 
-            while not done:
-                action = explorer.choose_action(env.action_space, state, learner.qtable)
-                next_state, reward, terminated, truncated, _ = env.step(action)
-                done = terminated or truncated
+        while not done:
+            action = explorer.choose_action(env.action_space, state, learner.qtable)
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
 
-                learner.update(state, action, reward, next_state)
-                total_reward += reward
-                steps += 1
-                state = next_state
+            learner.update(state, action, reward, next_state)
+            total_reward += reward
+            steps += 1
+            state = next_state
 
-            rewards_log[ep, run] = total_reward
-            lengths_log[ep, run] = steps
-            q_change_log[ep, run] = np.max(np.abs(learner.qtable - q_prev))
+        rewards_log[ep] = total_reward
+        lengths_log[ep] = steps
+        q_change_log[ep] = np.max(np.abs(learner.qtable - q_prev))
 
-            explorer.decay()
+        explorer.decay()
 
-        qtables_final[run] = learner.qtable
-
-    return rewards_log, lengths_log, eps_log, q_change_log, qtables_final
+    return rewards_log, lengths_log, eps_log, q_change_log, learner.qtable
 
 # ===========================================================
 # MOVING AVERAGE
@@ -113,45 +110,58 @@ def moving_average(x, window=200):
 # PLOTTING
 # ===========================================================
 
-def plot_results(rewards, lengths, epsilons):
-    mean_rewards = rewards.mean(axis=1)
-    mean_lengths = lengths.mean(axis=1)
-    mean_eps = epsilons.mean(axis=1)
-
-    # 1. Rewards raw
-    plt.figure(figsize=(12, 5))
-    plt.plot(mean_rewards, alpha=0.7)
-    plt.title("Reward per Episode (mean across runs)")
-    plt.xlabel("Episode")
-    plt.ylabel("Reward")
-    plt.grid()
-    plt.show()
-
-    # 2. Moving average
-    plt.figure(figsize=(12, 5))
-    plt.plot(moving_average(mean_rewards), linewidth=2)
-    plt.title("Moving Average Reward (window=200)")
-    plt.xlabel("Episode")
-    plt.ylabel("Smoothed Reward")
-    plt.grid()
-    plt.show()
-
-    # 3. Episode lengths
-    plt.figure(figsize=(12, 5))
-    plt.plot(mean_lengths)
-    plt.title("Episode Lengths")
-    plt.xlabel("Episode")
-    plt.ylabel("Steps")
-    plt.grid()
-    plt.show()
-
-    # 4. Epsilon curve
-    plt.figure(figsize=(12, 5))
-    plt.plot(mean_eps)
-    plt.title("Epsilon Decay")
-    plt.xlabel("Episode")
-    plt.ylabel("Epsilon")
-    plt.grid()
+def plot_multi_config_comparison(results_dict):
+    """Plot overlay comparison of multiple configurations."""
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    
+    colors = plt.cm.tab10(np.linspace(0, 1, len(results_dict)))
+    
+    # 1. Smoothed rewards
+    ax = axes[0, 0]
+    for idx, (name, data) in enumerate(results_dict.items()):
+        smoothed = moving_average(data['rewards'], window=200)
+        ax.plot(smoothed, label=name, color=colors[idx], linewidth=2, alpha=0.8)
+    ax.set_title("Smoothed Reward per Episode (window=200)", fontsize=12, fontweight='bold')
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Smoothed Reward")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 2. Episode lengths
+    ax = axes[0, 1]
+    for idx, (name, data) in enumerate(results_dict.items()):
+        smoothed_lengths = moving_average(data['lengths'], window=200)
+        ax.plot(smoothed_lengths, label=name, color=colors[idx], linewidth=2, alpha=0.8)
+    ax.set_title("Smoothed Episode Lengths (window=200)", fontsize=12, fontweight='bold')
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Steps")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 3. Epsilon decay
+    ax = axes[1, 0]
+    for idx, (name, data) in enumerate(results_dict.items()):
+        ax.plot(data['epsilons'], label=name, color=colors[idx], linewidth=2, alpha=0.8)
+    ax.set_title("Epsilon Decay", fontsize=12, fontweight='bold')
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Epsilon")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 4. Q-value changes (convergence)
+    ax = axes[1, 1]
+    for idx, (name, data) in enumerate(results_dict.items()):
+        smoothed_q = moving_average(data['q_changes'], window=200)
+        ax.plot(smoothed_q, label=name, color=colors[idx], linewidth=2, alpha=0.8)
+    ax.set_title("Smoothed Q-value Changes (window=200)", fontsize=12, fontweight='bold')
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Max Q-change")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_yscale('log')
+    
+    plt.tight_layout()
+    plt.savefig('saved_agents/config_comparison.png', dpi=200, bbox_inches='tight')
     plt.show()
 
 # ===========================================================
@@ -159,50 +169,123 @@ def plot_results(rewards, lengths, epsilons):
 # ===========================================================
 
 if __name__ == "__main__":
-    params = Params(
-        total_episodes=50_000,
-        learning_rate=0.1,
-        gamma=0.99,
-        epsilon_start=1.0,
-        epsilon_decay=0.99995,
-        epsilon_min=0.05,
-        seed=42,
-        is_rainy=False,
-        fickle_passenger=False,
-        n_runs=1,
-        action_size=6,
-        state_size=500,
-    )
+    # Define multiple configurations to compare
+    configs = [
+        {
+            "name": "Config-1 (baseline)",
+            "params": Params(
+                total_episodes=50_000,
+                learning_rate=0.1,
+                gamma=0.99,
+                epsilon_start=1.0,
+                epsilon_decay=0.99995,
+                epsilon_min=0.05,
+                seed=42,
+                is_rainy=False,
+                fickle_passenger=False,
+                n_runs=1,
+                action_size=6,
+                state_size=500,
+            )
+        },
+        {
+            "name": "Config-2 (faster decay)",
+            "params": Params(
+                total_episodes=50_000,
+                learning_rate=0.1,
+                gamma=0.99,
+                epsilon_start=1.0,
+                epsilon_decay=0.9999,
+                epsilon_min=0.05,
+                seed=42,
+                is_rainy=False,
+                fickle_passenger=False,
+                n_runs=1,
+                action_size=6,
+                state_size=500,
+            )
+        },
+        {
+            "name": "Config-3 (higher LR)",
+            "params": Params(
+                total_episodes=50_000,
+                learning_rate=0.3,
+                gamma=0.99,
+                epsilon_start=1.0,
+                epsilon_decay=0.99995,
+                epsilon_min=0.05,
+                seed=42,
+                is_rainy=False,
+                fickle_passenger=False,
+                n_runs=1,
+                action_size=6,
+                state_size=500,
+            )
+        },
+    ]
 
-    # Set numpy random seed for reproducibility
-    np.random.seed(params.seed)
-    rng = np.random.default_rng(params.seed)
+    # Train each configuration
+    results = {}
+    qtables_all = {}
+    
+    for idx, config in enumerate(configs):
+        print(f"\n{'='*60}")
+        print(f"Training {config['name']}")
+        print(f"{'='*60}")
+        
+        params = config['params']
+        
+        # Set numpy random seed for reproducibility
+        np.random.seed(params.seed)
+        rng = np.random.default_rng(params.seed)
 
-    env = gym.make(
-        "Taxi-v3",
-        is_rainy=params.is_rainy,
-        fickle_passenger=params.fickle_passenger
-    )
+        env = gym.make(
+            "Taxi-v3",
+            is_rainy=params.is_rainy,
+            fickle_passenger=params.fickle_passenger
+        )
 
-    learner = Qlearning(params.learning_rate, params.gamma, params.state_size, params.action_size)
-    explorer = EpsilonGreedy(params.epsilon_start, params.epsilon_min, params.epsilon_decay, rng=rng)
+        learner = Qlearning(params.learning_rate, params.gamma, params.state_size, params.action_size)
+        explorer = EpsilonGreedy(params.epsilon_start, params.epsilon_min, params.epsilon_decay, rng=rng)
 
-    rewards, lengths, epsilons, q_changes, qtables = run_env(env, learner, explorer, params)
+        rewards, lengths, epsilons, q_changes, qtable = run_single_config(
+            env, learner, explorer, params, config['name']
+        )
+        
+        env.close()
+        
+        # Store results
+        results[config['name']] = {
+            'rewards': rewards,
+            'lengths': lengths,
+            'epsilons': epsilons,
+            'q_changes': q_changes,
+            'params': params,
+        }
+        qtables_all[config['name']] = qtable
+    
+    # Plot comparison across all configs
+    print(f"\n{'='*60}")
+    print("Generating comparison plots...")
+    print(f"{'='*60}")
+    plot_multi_config_comparison(results)
 
-    # PLOTS
-    plot_results(rewards, lengths, epsilons)
-
-    # SAVE RESULTS
+    # Save the FIRST configuration 
+    first_config_name = configs[0]['name']
     save_data = {
-        "qtable": qtables[0],
-        "params": params,
-        "rewards": rewards,
-        "lengths": lengths,
-        "epsilons": epsilons,
-        "q_changes": q_changes,
+        "qtable": qtables_all[first_config_name],
+        "params": results[first_config_name]['params'],
+        "rewards": results[first_config_name]['rewards'],
+        "lengths": results[first_config_name]['lengths'],
+        "epsilons": results[first_config_name]['epsilons'],
+        "q_changes": results[first_config_name]['q_changes'],
+        "config_name": first_config_name,
     }
 
-    with open("saved_agents/taxi_qtable.pkl", "wb") as f:
-        pickle.dump(save_data, f)
+    import os
+    os.makedirs("saved_agents", exist_ok=True)
+    with open("saved_agents/taxi_qtable.pkl", "wb") as file:
+        pickle.dump(save_data, file)
 
-    print("Training complete. Model saved.")
+    print(f"\nTraining complete! Saved {first_config_name} to saved_agents/taxi_qtable.pkl")
+    print(f"Comparison plot saved to saved_agents/config_comparison.png")
