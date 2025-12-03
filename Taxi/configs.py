@@ -13,7 +13,6 @@ configs = [
                 seed=42,
                 is_rainy=False,
                 fickle_passenger=False,
-                n_runs=1,
                 action_size=6,
                 state_size=500,
             )
@@ -30,7 +29,6 @@ configs = [
                 seed=42,
                 is_rainy=False,
                 fickle_passenger=False,
-                n_runs=1,
                 action_size=6,
                 state_size=500,
             )
@@ -47,7 +45,6 @@ configs = [
                 seed=42,
                 is_rainy=False,
                 fickle_passenger=False,
-                n_runs=1,
                 action_size=6,
                 state_size=500,
             )

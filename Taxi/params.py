@@ -7,9 +7,8 @@ class Params(NamedTuple):
     epsilon_start: float
     epsilon_decay: float
     epsilon_min: float
-    seed: int
+    seed: int # not used for this env since the passenger starting location should be random
     is_rainy: bool
     fickle_passenger: bool
-    n_runs: int
     action_size: int
     state_size: int
