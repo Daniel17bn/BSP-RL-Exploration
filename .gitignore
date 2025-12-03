@@ -4,3 +4,5 @@ __pycache__/
 
 Taxi/__pycache__
 Taxi/saved_agents/
+Taxi/configs.py
+
