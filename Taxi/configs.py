@@ -2,7 +2,7 @@ from params import Params
 
 configs = [
         {
-            "name": "Config-1 (baseline)",
+            "name": "Example 1",
             "params": Params(
                 total_episodes=50_000,
                 learning_rate=0.1,
@@ -19,7 +19,7 @@ configs = [
             )
         },
         {
-            "name": "Config-2 (faster decay)",
+            "name": "Example 2",
             "params": Params(
                 total_episodes=50_000,
                 learning_rate=0.1,
@@ -36,7 +36,7 @@ configs = [
             )
         },
         {
-            "name": "Config-3 (higher LR)",
+            "name": "Example 3",
             "params": Params(
                 total_episodes=50_000,
                 learning_rate=0.3,
