@@ -270,7 +270,31 @@ if __name__ == "__main__":
     print(f"{'='*60}")
     plot_multi_config_comparison(results)
 
-    # Save the FIRST configuration 
+    # Save ALL configurations
+    import os
+    os.makedirs("saved_agents", exist_ok=True)
+    
+    for idx, config in enumerate(configs):
+        config_name = config['name']
+        safe_name = config_name.replace(" ", "_").replace("(", "").replace(")", "").replace("-", "_")
+        
+        save_data = {
+            "qtable": qtables_all[config_name],
+            "params": results[config_name]['params'],
+            "rewards": results[config_name]['rewards'],
+            "lengths": results[config_name]['lengths'],
+            "epsilons": results[config_name]['epsilons'],
+            "q_changes": results[config_name]['q_changes'],
+            "config_name": config_name,
+        }
+        
+        save_path = f"saved_agents/{safe_name}.pkl"
+        with open(save_path, "wb") as file:
+            pickle.dump(save_data, file)
+        
+        print(f"Saved {config_name} to {save_path}")
+    
+    # Also save the first config as the default (for backward compatibility)
     first_config_name = configs[0]['name']
     save_data = {
         "qtable": qtables_all[first_config_name],
@@ -281,11 +305,10 @@ if __name__ == "__main__":
         "q_changes": results[first_config_name]['q_changes'],
         "config_name": first_config_name,
     }
-
-    import os
-    os.makedirs("saved_agents", exist_ok=True)
+    
     with open("saved_agents/taxi_qtable.pkl", "wb") as file:
         pickle.dump(save_data, file)
 
-    print(f"\nTraining complete! Saved {first_config_name} to saved_agents/taxi_qtable.pkl")
+    print(f"\nTraining complete! All configs saved to saved_agents/")
+    print(f"Default config ({first_config_name}) saved to saved_agents/taxi_qtable.pkl")
     print(f"Comparison plot saved to saved_agents/config_comparison.png")
