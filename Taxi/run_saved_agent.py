@@ -3,9 +3,9 @@
 import pickle
 import numpy as np
 import gymnasium as gym
-from params import Params  # Import the real Params class so pickle can reconstruct it
+from params import Params  
 
-SAVE_PATH = "saved_agents/taxi_qtable.pkl"
+SAVE_PATH = "your_saved_agent_path.pkl"  # Replace with your actual saved agent path
 
 # Load saved Q-table + parameters
 with open(SAVE_PATH, "rb") as f:

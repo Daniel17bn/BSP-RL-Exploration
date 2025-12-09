@@ -3,7 +3,7 @@ from typing import NamedTuple
 class Params(NamedTuple):
     total_episodes: int
     learning_rate: float
-    gamma: float
+    gamma: float 
     epsilon_start: float
     epsilon_decay: float
     epsilon_min: float
