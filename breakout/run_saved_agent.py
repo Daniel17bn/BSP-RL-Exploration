@@ -10,7 +10,7 @@ gym.register_envs(ale_py)
 from dqn_training import DQN, preprocess_frame
 
 # Configuration
-MODEL_PATH = "saved_agents/Baseline_step_50000.pt"  # Update with your model path
+MODEL_PATH = "saved_agents/Baseline/final.pt"  # Update with your model path
 N_EPISODES = 20
 RENDER = True
 
@@ -77,7 +77,9 @@ def run_saved_agent(model_path, n_episodes=5, render=True):
         
         print(f"\n=== Episode {episode + 1} started with {lives} lives ===")
         
-        life_lost_flag = False
+        # Breakout typically requires a FIRE action to launch the ball.
+        # Force FIRE once at the start, and after each life loss.
+        life_lost_flag = True
         
         while not done:
             # After life loss, need to fire to restart the ball

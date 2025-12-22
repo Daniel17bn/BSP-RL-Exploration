@@ -297,16 +297,34 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
     frame_stack = FrameStack(n_frames=4)
     
     # Reset environment
-    obs, _ = env.reset(seed=params.seed)
+    obs, info = env.reset(seed=params.seed)
     state = frame_stack.reset(obs)
+    lives = info.get('lives', None)
+    # Breakout typically requires a FIRE action to launch the ball.
+    # Force FIRE once at the start, and after each life loss.
+    need_fire = True
     
     pbar = tqdm(total=params.total_timesteps, initial=start_step, desc=f"Training {config_name}")
     
     for step in range(params.total_timesteps):
         # Select and perform action
-        action = agent.select_action(state, training=True)
-        next_obs, reward, terminated, truncated, _ = env.step(action)
-        done = terminated or truncated
+        if need_fire:
+            action = 1  # FIRE
+            need_fire = False
+        else:
+            action = agent.select_action(state, training=True)
+
+        next_obs, reward, terminated, truncated, info = env.step(action)
+
+        # Breakout life-loss handling: some env configs signal termination on life loss.
+        # We track lives and only end the episode when lives are exhausted (or truncated).
+        new_lives = info.get('lives', lives)
+        life_lost = (lives is not None) and (new_lives is not None) and (new_lives < lives)
+        if life_lost:
+            lives = new_lives
+            need_fire = True
+
+        done = bool(truncated) or ((lives == 0) if lives is not None else bool(terminated))
         
         # Process next state
         next_state = frame_stack.push(next_obs)
@@ -351,8 +369,10 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
                 })
             
             # Reset for next episode
-            obs, _ = env.reset()
+            obs, info = env.reset()
             state = frame_stack.reset(obs)
+            lives = info.get('lives', lives)
+            need_fire = True
             current_reward = 0
             current_length = 0
         else:
