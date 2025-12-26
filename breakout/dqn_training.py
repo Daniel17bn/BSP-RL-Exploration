@@ -59,25 +59,27 @@ class DQN(nn.Module):
 # ===========================================================
 
 class ReplayBuffer:
-    """Optimized replay buffer with pre-allocated arrays for HPC."""
+    """Memory-efficient replay buffer with pre-allocated arrays for HPC."""
     def __init__(self, capacity, state_shape):
         self.capacity = capacity
         self.state_shape = state_shape
         self.position = 0
         self.size = 0
         
-        # Pre-allocate arrays for faster access
-        self.states = np.zeros((capacity, *state_shape), dtype=np.float32)
+        # Pre-allocate arrays with uint8 to save 4x memory (states are 0-255 grayscale)
+        # Convert to float32 only when sampling
+        self.states = np.zeros((capacity, *state_shape), dtype=np.uint8)
         self.actions = np.zeros(capacity, dtype=np.int64)
         self.rewards = np.zeros(capacity, dtype=np.float32)
-        self.next_states = np.zeros((capacity, *state_shape), dtype=np.float32)
+        self.next_states = np.zeros((capacity, *state_shape), dtype=np.uint8)
         self.dones = np.zeros(capacity, dtype=np.float32)
     
     def push(self, state, action, reward, next_state, done):
-        self.states[self.position] = state
+        # Store states as uint8 (0-255), converting from float32 (0-1)
+        self.states[self.position] = (state * 255).astype(np.uint8)
         self.actions[self.position] = action
         self.rewards[self.position] = reward
-        self.next_states[self.position] = next_state
+        self.next_states[self.position] = (next_state * 255).astype(np.uint8)
         self.dones[self.position] = done
         
         self.position = (self.position + 1) % self.capacity
@@ -85,11 +87,12 @@ class ReplayBuffer:
     
     def sample(self, batch_size):
         indices = np.random.randint(0, self.size, size=batch_size)
+        # Convert uint8 back to float32 (0-1) when sampling
         return (
-            self.states[indices],
+            self.states[indices].astype(np.float32) / 255.0,
             self.actions[indices],
             self.rewards[indices],
-            self.next_states[indices],
+            self.next_states[indices].astype(np.float32) / 255.0,
             self.dones[indices]
         )
     
@@ -167,6 +170,10 @@ class DQNAgent:
         next_states = torch.from_numpy(next_states).to(self.device, non_blocking=True)
         dones = torch.from_numpy(dones).to(self.device, non_blocking=True)
         
+        # Clear CUDA cache periodically to prevent fragmentation
+        if self.device.type == 'cuda' and self.steps_done % 1000 == 0:
+            torch.cuda.empty_cache()
+        
         if self.use_amp:
             # Mixed precision training for ~2-3x speedup
             with autocast():
@@ -233,12 +240,14 @@ class DQNAgent:
 # ===========================================================
 
 def preprocess_frame(frame):
-    """Convert frame to grayscale and resize."""
+    """Convert frame to grayscale and resize to 84x84 (DQN Nature paper standard)."""
     # Convert to grayscale
     gray = np.dot(frame[..., :3], [0.299, 0.587, 0.114])
-    # Crop and resize (84x84 is standard for Atari)
-    resized = gray[34:194, :]  # Crop to remove score
-    resized = resized[::2, ::2]  # Downsample by 2
+    # Crop to remove score area (standard crop for Breakout)
+    cropped = gray[34:194, :]  # 160 rows
+    # Resize to 84x84 using simple downsampling
+    # 160 rows -> 84 rows, 160 cols -> 84 cols
+    resized = cropped[::2, ::2][:84, :84]  # Ensure exact 84x84
     return resized.astype(np.float32) / 255.0
 
 class FrameStack:
@@ -296,10 +305,16 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
     # Frame stacker
     frame_stack = FrameStack(n_frames=4)
     
-    # Reset environment
+    # Reset environment with random no-op starts (standard DQN practice)
     obs, info = env.reset(seed=params.seed)
+    # Perform random number of no-op actions (0-30) for stochasticity
+    max_no_ops = 30
+    no_ops = np.random.randint(0, max_no_ops + 1)
+    for _ in range(no_ops):
+        obs, _, _, _, _ = env.step(0)  # 0 = NOOP action
+    
     state = frame_stack.reset(obs)
-    lives = info.get('lives', None)
+    lives = info.get('lives', 5)  # Breakout starts with 5 lives
     # Breakout typically requires a FIRE action to launch the ball.
     # Force FIRE once at the start, and after each life loss.
     need_fire = True
@@ -316,21 +331,31 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
 
         next_obs, reward, terminated, truncated, info = env.step(action)
 
-        # Breakout life-loss handling: some env configs signal termination on life loss.
-        # We track lives and only end the episode when lives are exhausted (or truncated).
+        # CRITICAL: Clip reward to [-1, 1] (DQN Nature paper standard for Atari)
+        # This stabilizes learning by preventing large reward variations
+        reward = np.sign(reward)  # Equivalent to clipping to [-1, 0, 1]
+
+        # Breakout life-loss handling (DQN Nature paper approach):
+        # When life is lost, treat it as terminal for Q-learning (done=True in replay buffer)
+        # but continue the episode without resetting the environment
         new_lives = info.get('lives', lives)
-        life_lost = (lives is not None) and (new_lives is not None) and (new_lives < lives)
+        life_lost = (new_lives < lives)
         if life_lost:
             lives = new_lives
             need_fire = True
 
-        done = bool(truncated) or ((lives == 0) if lives is not None else bool(terminated))
+        # For replay buffer: done=True if life lost OR episode truly ended
+        # This helps the agent learn that losing a life is bad
+        done_for_replay = life_lost or terminated or truncated
+        
+        # For episode termination: only end when all lives exhausted or truncated
+        real_done = (lives == 0) or truncated
         
         # Process next state
         next_state = frame_stack.push(next_obs)
         
-        # Store transition
-        agent.replay_buffer.push(state, action, reward, next_state, float(done))
+        # Store transition with done flag indicating life loss or episode end
+        agent.replay_buffer.push(state, action, reward, next_state, float(done_for_replay))
         
         # Update stats
         current_reward += reward
@@ -350,8 +375,8 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
         # Update epsilon
         agent.update_epsilon()
         
-        # Handle episode end
-        if done:
+        # Handle episode end (only when all lives exhausted or truncated)
+        if real_done:
             episode_rewards.append(current_reward)
             episode_lengths.append(current_length)
             episode_epsilons.append(agent.epsilon)
@@ -368,10 +393,16 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
                     'loss': f'{avg_loss:.4f}'
                 })
             
-            # Reset for next episode
+            # Reset for next episode with random no-op starts
             obs, info = env.reset()
+            # Random no-ops for stochasticity
+            max_no_ops = 30
+            no_ops = np.random.randint(0, max_no_ops + 1)
+            for _ in range(no_ops):
+                obs, _, _, _, _ = env.step(0)  # NOOP
+            
             state = frame_stack.reset(obs)
-            lives = info.get('lives', lives)
+            lives = info.get('lives', 5)
             need_fire = True
             current_reward = 0
             current_length = 0
@@ -440,7 +471,7 @@ def train_single_config(config_idx, gpu_id=0, num_gpus=1):
     # Get state and action dimensions
     obs, _ = env.reset()
     n_actions = env.action_space.n
-    state_shape = (4, 80, 80)  # 4 stacked 80x80 frames
+    state_shape = (4, 84, 84)  # 4 stacked 84x84 frames (DQN Nature standard)
     
     # Create agent with mixed precision training
     agent = DQNAgent(state_shape, n_actions, params, device, use_amp=True)
