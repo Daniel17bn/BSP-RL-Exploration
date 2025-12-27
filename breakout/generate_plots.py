@@ -21,12 +21,22 @@ from configs import configs
 def moving_average(x, window=100):
     """Calculate moving average for smoothing plots."""
     if len(x) < window:
-        window = len(x)
+        window = max(1, len(x))
     if window <= 1:
         return x
     return np.convolve(x, np.ones(window) / window, mode='valid')
 
-def plot_training_results(results_dict, save_dir='saved_agents/plots'):
+def adaptive_window(data_length, base_window=100, target_points=1000):
+    """Calculate adaptive smoothing window based on data length."""
+    # For 10M timesteps, we want smoother curves
+    if data_length > 50000:  # Very long training
+        return max(base_window, data_length // target_points)
+    elif data_length > 10000:  # Long training
+        return max(base_window, data_length // (target_points * 2))
+    else:
+        return base_window
+
+def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     """Plot comprehensive training results for deep RL research."""
     
     colors = plt.cm.tab10(np.linspace(0, 1, len(results_dict)))
@@ -35,14 +45,20 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots'):
     plt.figure(figsize=(16, 8))
     for idx, (name, data) in enumerate(results_dict.items()):
         rewards = data['episode_rewards']
-        if len(rewards) > 200:
-            smoothed = moving_average(rewards, window=200)
+        window = adaptive_window(len(rewards), base_window=500)
+        if len(rewards) > window:
+            smoothed = moving_average(rewards, window=window)
             episodes = np.arange(len(smoothed))
             
-            # Calculate rolling std for confidence band
-            rewards_padded = np.pad(rewards, (100, 100), mode='edge')
-            rolling_std = np.array([np.std(rewards_padded[i:i+200]) for i in range(len(rewards))])
-            rolling_std = moving_average(rolling_std, window=200)
+            # Calculate rolling std for confidence band (downsample for efficiency)
+            half_window = window // 2
+            rewards_padded = np.pad(rewards, (half_window, half_window), mode='edge')
+            stride = max(1, len(rewards) // 5000)  # Limit to 5000 points for efficiency
+            rolling_std = np.array([np.std(rewards_padded[i:i+window]) for i in range(0, len(rewards), stride)])
+            # Interpolate back to full length
+            x_sparse = np.arange(0, len(rewards), stride)
+            rolling_std = np.interp(np.arange(len(rewards)), x_sparse, rolling_std)
+            rolling_std = moving_average(rolling_std, window=window)
             
             plt.plot(episodes, smoothed, label=name, color=colors[idx], linewidth=4, alpha=0.95)
             plt.fill_between(episodes, smoothed - rolling_std[:len(smoothed)], 
@@ -62,11 +78,12 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots'):
     plt.figure(figsize=(16, 8))
     for idx, (name, data) in enumerate(results_dict.items()):
         rewards = data['episode_rewards']
-        if len(rewards) > 200:
-            smoothed = moving_average(rewards, window=200)
+        window = adaptive_window(len(rewards), base_window=500)
+        if len(rewards) > window:
+            smoothed = moving_average(rewards, window=window)
             episodes = np.arange(len(smoothed))
             plt.plot(episodes, smoothed, label=name, color=colors[idx], linewidth=4, alpha=0.95)
-    plt.title("Smoothed Learning Curves (200-Episode Moving Average)", fontsize=20, fontweight='bold', pad=20)
+    plt.title(f"Smoothed Learning Curves ({window}-Episode Moving Average)", fontsize=20, fontweight='bold', pad=20)
     plt.xlabel("Episode", fontsize=16, fontweight='bold')
     plt.ylabel("Average Reward", fontsize=16, fontweight='bold')
     plt.legend(fontsize=14, loc='best', framealpha=0.95, edgecolor='black', fancybox=True)
@@ -80,8 +97,9 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots'):
     plt.figure(figsize=(16, 8))
     for idx, (name, data) in enumerate(results_dict.items()):
         lengths = data['episode_lengths']
-        if len(lengths) > 200:
-            smoothed = moving_average(lengths, window=200)
+        window = adaptive_window(len(lengths), base_window=500)
+        if len(lengths) > window:
+            smoothed = moving_average(lengths, window=window)
             episodes = np.arange(len(smoothed))
             plt.plot(episodes, smoothed, label=name, color=colors[idx], linewidth=4, alpha=0.95)
     plt.title("Episode Survival Time (Steps per Episode)", fontsize=20, fontweight='bold', pad=20)
@@ -98,8 +116,9 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots'):
     plt.figure(figsize=(16, 8))
     for idx, (name, data) in enumerate(results_dict.items()):
         losses = data['losses']
-        if len(losses) > 500:
-            smoothed = moving_average(losses, window=500)
+        window = adaptive_window(len(losses), base_window=2000, target_points=2000)
+        if len(losses) > window:
+            smoothed = moving_average(losses, window=window)
             steps = np.arange(len(smoothed))
             plt.plot(steps, smoothed, label=name, color=colors[idx], linewidth=4, alpha=0.95)
     plt.title("TD Loss Convergence", fontsize=20, fontweight='bold', pad=20)
@@ -133,12 +152,12 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots'):
     final_rewards = []
     labels = []
     for name, data in results_dict.items():
-        # Last 20% of episodes
-        final_window = data['episode_rewards'][-int(len(data['episode_rewards']) * 0.2):]
+        # Last 10% of episodes (more stable for long training)
+        final_window = data['episode_rewards'][-int(len(data['episode_rewards']) * 0.1):]
         final_rewards.append(final_window)
         labels.append(name)
     
-    bp = plt.boxplot(final_rewards, labels=labels, patch_artist=True,
+    bp = plt.boxplot(final_rewards, tick_labels=labels, patch_artist=True,
                      medianprops=dict(color='red', linewidth=3),
                      showfliers=True, notch=True, widths=0.6)
     
@@ -147,7 +166,7 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots'):
         patch.set_alpha(0.7)
         patch.set_linewidth(2)
     
-    plt.title('Final Performance Distribution (Last 20% Episodes)', fontsize=20, fontweight='bold', pad=20)
+    plt.title('Final Performance Distribution (Last 10% Episodes)', fontsize=20, fontweight='bold', pad=20)
     plt.ylabel('Reward', fontsize=16, fontweight='bold')
     plt.xlabel('Configuration', fontsize=16, fontweight='bold')
     plt.xticks(fontsize=14, rotation=0)
@@ -169,19 +188,25 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots'):
         
         # Calculate reward rate per 1000 steps
         if len(cumulative_steps) > 10:
-            # Sample every 10 episodes for clarity
-            sample_idx = np.arange(0, len(cumulative_steps), 10)
+            # Adaptive sampling based on total episodes
+            sample_interval = max(10, len(cumulative_steps) // 1000)
+            sample_idx = np.arange(0, len(cumulative_steps), sample_interval)
             reward_rate = []
             steps_sampled = []
             
             for i in sample_idx[1:]:
                 if i > 0:
-                    rate = (cumulative_rewards[i] - cumulative_rewards[max(0, i-10)]) / \
-                           (cumulative_steps[i] - cumulative_steps[max(0, i-10)]) * 1000
+                    lookback = min(sample_interval, i)
+                    rate = (cumulative_rewards[i] - cumulative_rewards[i-lookback]) / \
+                           (cumulative_steps[i] - cumulative_steps[i-lookback]) * 1000
                     reward_rate.append(rate)
                     steps_sampled.append(cumulative_steps[i])
             
-            plt.plot(steps_sampled, moving_average(reward_rate, window=min(10, len(reward_rate))), 
+            smooth_window = adaptive_window(len(reward_rate), base_window=50)
+            smoothed_rate = moving_average(reward_rate, window=smooth_window)
+            # Adjust steps_sampled to match smoothed array length
+            steps_smoothed = steps_sampled[:len(smoothed_rate)]
+            plt.plot(steps_smoothed, smoothed_rate, 
                     label=name, color=colors[idx], linewidth=2.5, alpha=0.9)
     
     plt.title("Learning Efficiency (Reward per 1000 Timesteps)", fontsize=14, fontweight='bold')
@@ -202,7 +227,7 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots'):
     metrics_data = []
     for name, data in results_dict.items():
         rewards = data['episode_rewards']
-        final_window = rewards[-int(len(rewards) * 0.2):]
+        final_window = rewards[-int(len(rewards) * 0.1):]  # Last 10% for 10M training
         
         metrics_data.append([
             name,
@@ -245,8 +270,11 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots'):
     for idx, (name, data) in enumerate(results_dict.items()):
         lengths = data['episode_lengths']
         
+        # Adaptive binning for large datasets
+        n_bins = min(100, max(50, len(lengths) // 500))
+        
         # Histogram
-        axes[idx].hist(lengths, bins=50, color=colors[idx], alpha=0.7, edgecolor='black', linewidth=0.5)
+        axes[idx].hist(lengths, bins=n_bins, color=colors[idx], alpha=0.7, edgecolor='black', linewidth=0.5)
         axes[idx].axvline(np.mean(lengths), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(lengths):.0f}')
         axes[idx].axvline(np.median(lengths), color='blue', linestyle='--', linewidth=2, label=f'Median: {np.median(lengths):.0f}')
         axes[idx].set_title(name, fontsize=12, fontweight='bold')
@@ -308,12 +336,13 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots'):
     # 11. Convergence analysis (time to reach reward milestones)
     plt.figure(figsize=(12, 6))
     
-    milestones = [0, 5, 10, 15, 20]  # Reward thresholds
+    milestones = [0, 5, 10, 20, 30, 50]  # Reward thresholds for Breakout
     config_convergence = {}
     
     for name, data in results_dict.items():
         rewards = data['episode_rewards']
-        smoothed = moving_average(rewards, window=50) if len(rewards) > 50 else rewards
+        window = adaptive_window(len(rewards), base_window=100)
+        smoothed = moving_average(rewards, window=window) if len(rewards) > window else rewards
         
         episodes_to_milestone = []
         for milestone in milestones:
@@ -381,7 +410,374 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots'):
     plt.savefig(f'{save_dir}/12_loss_reward_correlation.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"[SAVED] 12 comprehensive plots saved to {save_dir}/ (no display)")
+    # 13. Sample Efficiency - Cumulative Reward vs Timesteps
+    plt.figure(figsize=(16, 8))
+    for idx, (name, data) in enumerate(results_dict.items()):
+        rewards = data['episode_rewards']
+        lengths = data['episode_lengths']
+        
+        cumulative_steps = np.cumsum(lengths)
+        cumulative_rewards = np.cumsum(rewards)
+        
+        # Downsample for plotting efficiency
+        if len(cumulative_steps) > 5000:
+            indices = np.linspace(0, len(cumulative_steps)-1, 5000, dtype=int)
+            cumulative_steps = cumulative_steps[indices]
+            cumulative_rewards = cumulative_rewards[indices]
+        
+        plt.plot(cumulative_steps, cumulative_rewards, label=name, 
+                color=colors[idx], linewidth=3, alpha=0.9)
+    
+    plt.title("Sample Efficiency (Cumulative Reward vs Timesteps)", fontsize=20, fontweight='bold', pad=20)
+    plt.xlabel("Timesteps", fontsize=16, fontweight='bold')
+    plt.ylabel("Cumulative Reward", fontsize=16, fontweight='bold')
+    plt.legend(fontsize=14, loc='best', framealpha=0.95, edgecolor='black', fancybox=True)
+    plt.grid(True, alpha=0.4, linewidth=1)
+    plt.ticklabel_format(style='scientific', axis='x', scilimits=(0,0))
+    plt.tick_params(labelsize=14)
+    plt.tight_layout()
+    plt.savefig(f'{save_dir}/13_sample_efficiency.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 14. Training Stability - Rolling Variance and Mean
+    fig, axes = plt.subplots(2, 1, figsize=(16, 10))
+    fig.suptitle('Training Stability Analysis', fontsize=20, fontweight='bold')
+    
+    for idx, (name, data) in enumerate(results_dict.items()):
+        rewards = data['episode_rewards']
+        window = adaptive_window(len(rewards), base_window=500)
+        
+        if len(rewards) > window:
+            # Rolling mean
+            rolling_mean = moving_average(rewards, window=window)
+            
+            # Rolling variance
+            rolling_var = np.array([np.var(rewards[max(0, i-window):i+1]) 
+                                   for i in range(window, len(rewards))])
+            
+            episodes_mean = np.arange(len(rolling_mean))
+            episodes_var = np.arange(window, len(rewards))
+            
+            axes[0].plot(episodes_mean, rolling_mean, label=name, 
+                        color=colors[idx], linewidth=3, alpha=0.9)
+            axes[1].plot(episodes_var, rolling_var, label=name, 
+                        color=colors[idx], linewidth=3, alpha=0.9)
+    
+    axes[0].set_ylabel('Rolling Mean Reward', fontsize=14, fontweight='bold')
+    axes[0].legend(fontsize=12, loc='best')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].tick_params(labelsize=12)
+    
+    axes[1].set_xlabel('Episode', fontsize=14, fontweight='bold')
+    axes[1].set_ylabel('Rolling Variance', fontsize=14, fontweight='bold')
+    axes[1].legend(fontsize=12, loc='best')
+    axes[1].grid(True, alpha=0.3)
+    axes[1].tick_params(labelsize=12)
+    
+    plt.tight_layout()
+    plt.savefig(f'{save_dir}/14_training_stability.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 15. Performance Milestones - Timesteps to reach key rewards
+    plt.figure(figsize=(12, 8))
+    
+    milestones = [5, 10, 20, 30, 40, 50]
+    milestone_data = {}
+    
+    for name, data in results_dict.items():
+        rewards = data['episode_rewards']
+        lengths = data['episode_lengths']
+        cumulative_steps = np.cumsum(lengths)
+        
+        window = adaptive_window(len(rewards), base_window=100)
+        smoothed = moving_average(rewards, window=window) if len(rewards) > window else rewards
+        
+        timesteps_to_milestone = []
+        for milestone in milestones:
+            idx = np.where(smoothed >= milestone)[0]
+            if len(idx) > 0:
+                episode_idx = min(idx[0] + window//2, len(cumulative_steps)-1)
+                timesteps_to_milestone.append(cumulative_steps[episode_idx] / 1e6)  # In millions
+            else:
+                timesteps_to_milestone.append(np.nan)
+        
+        milestone_data[name] = timesteps_to_milestone
+    
+    x = np.arange(len(milestones))
+    width = 0.8 / len(milestone_data)
+    
+    for idx, (name, timesteps) in enumerate(milestone_data.items()):
+        offset = (idx - len(milestone_data)/2 + 0.5) * width
+        bars = plt.bar(x + offset, timesteps, width, label=name, 
+                      color=colors[idx], alpha=0.8, edgecolor='black', linewidth=1.5)
+        
+        # Add value labels on bars
+        for bar, val in zip(bars, timesteps):
+            if not np.isnan(val):
+                height = bar.get_height()
+                plt.text(bar.get_x() + bar.get_width()/2., height,
+                        f'{val:.1f}M', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    plt.xlabel('Reward Milestone', fontsize=14, fontweight='bold')
+    plt.ylabel('Timesteps to Reach (Millions)', fontsize=14, fontweight='bold')
+    plt.title('Sample Efficiency: Timesteps to Reach Reward Milestones', fontsize=16, fontweight='bold', pad=15)
+    plt.xticks(x, milestones, fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.legend(fontsize=12, loc='upper left')
+    plt.grid(True, alpha=0.3, axis='y')
+    plt.tight_layout()
+    plt.savefig(f'{save_dir}/15_milestone_timesteps.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 16. Score Heatmap Over Time
+    fig, axes = plt.subplots(1, min(3, len(results_dict)), figsize=(18, 5))
+    if len(results_dict) == 1:
+        axes = [axes]
+    fig.suptitle('Reward Distribution Heatmap Over Training', fontsize=18, fontweight='bold')
+    
+    for idx, (name, data) in enumerate(results_dict.items()):
+        if idx >= 3:  # Limit to 3 configs for space
+            break
+            
+        rewards = data['episode_rewards']
+        
+        # Divide training into 50 segments
+        n_segments = 50
+        segment_size = len(rewards) // n_segments
+        
+        # Create heatmap data
+        heatmap_data = []
+        for i in range(n_segments):
+            segment = rewards[i*segment_size:(i+1)*segment_size]
+            if len(segment) > 0:
+                hist, _ = np.histogram(segment, bins=20, range=(-5, 60))
+                heatmap_data.append(hist)
+        
+        heatmap_data = np.array(heatmap_data).T
+        
+        im = axes[idx].imshow(heatmap_data, aspect='auto', cmap='YlOrRd', 
+                             interpolation='bilinear', origin='lower')
+        axes[idx].set_title(name, fontsize=14, fontweight='bold')
+        axes[idx].set_xlabel('Training Progress (%)', fontsize=11)
+        axes[idx].set_ylabel('Reward Bins', fontsize=11)
+        axes[idx].set_xticks(np.linspace(0, n_segments-1, 5))
+        axes[idx].set_xticklabels(['0%', '25%', '50%', '75%', '100%'])
+        axes[idx].set_yticks(np.linspace(0, 19, 5))
+        axes[idx].set_yticklabels(['-5', '10', '25', '40', '60'])
+        plt.colorbar(im, ax=axes[idx], label='Frequency')
+    
+    plt.tight_layout()
+    plt.savefig(f'{save_dir}/16_score_heatmap.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 17. Success Rate Over Time
+    plt.figure(figsize=(16, 8))
+    
+    for idx, (name, data) in enumerate(results_dict.items()):
+        rewards = data['episode_rewards']
+        window = adaptive_window(len(rewards), base_window=500)
+        
+        # Calculate rolling success rate (positive reward episodes)
+        success_rate = []
+        episodes = []
+        for i in range(window, len(rewards)):
+            segment = rewards[i-window:i]
+            rate = np.sum(np.array(segment) > 0) / len(segment) * 100
+            success_rate.append(rate)
+            episodes.append(i)
+        
+        plt.plot(episodes, success_rate, label=name, 
+                color=colors[idx], linewidth=3, alpha=0.9)
+    
+    plt.title("Success Rate Over Training (% Positive Reward Episodes)", 
+             fontsize=20, fontweight='bold', pad=20)
+    plt.xlabel("Episode", fontsize=16, fontweight='bold')
+    plt.ylabel("Success Rate (%)", fontsize=16, fontweight='bold')
+    plt.ylim([0, 105])
+    plt.legend(fontsize=14, loc='best', framealpha=0.95, edgecolor='black', fancybox=True)
+    plt.grid(True, alpha=0.4, linewidth=1)
+    plt.tick_params(labelsize=14)
+    plt.tight_layout()
+    plt.savefig(f'{save_dir}/17_success_rate.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 18. Learning Rate (Improvement Per Episode)
+    plt.figure(figsize=(16, 8))
+    
+    for idx, (name, data) in enumerate(results_dict.items()):
+        rewards = data['episode_rewards']
+        window = adaptive_window(len(rewards), base_window=1000)
+        
+        if len(rewards) > window:
+            # Calculate improvement rate
+            smoothed = moving_average(rewards, window=window)
+            improvement = np.diff(smoothed)
+            episodes = np.arange(1, len(improvement)+1)
+            
+            # Further smooth the improvement
+            improvement_smoothed = moving_average(improvement, window=window//4)
+            episodes_smoothed = episodes[:len(improvement_smoothed)]
+            
+            plt.plot(episodes_smoothed, improvement_smoothed, label=name, 
+                    color=colors[idx], linewidth=3, alpha=0.9)
+    
+    plt.title("Learning Rate (Reward Improvement Per Episode)", 
+             fontsize=20, fontweight='bold', pad=20)
+    plt.xlabel("Episode", fontsize=16, fontweight='bold')
+    plt.ylabel("Reward Improvement Rate", fontsize=16, fontweight='bold')
+    plt.axhline(y=0, color='black', linestyle='--', alpha=0.5, linewidth=2)
+    plt.legend(fontsize=14, loc='best', framealpha=0.95, edgecolor='black', fancybox=True)
+    plt.grid(True, alpha=0.4, linewidth=1)
+    plt.tick_params(labelsize=14)
+    plt.tight_layout()
+    plt.savefig(f'{save_dir}/18_learning_rate.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 19. Best Episodes Timeline
+    plt.figure(figsize=(16, 8))
+    
+    for idx, (name, data) in enumerate(results_dict.items()):
+        rewards = data['episode_rewards']
+        
+        # Track best reward achieved so far
+        best_so_far = []
+        current_best = float('-inf')
+        for r in rewards:
+            if r > current_best:
+                current_best = r
+            best_so_far.append(current_best)
+        
+        episodes = np.arange(len(best_so_far))
+        plt.plot(episodes, best_so_far, label=name, 
+                color=colors[idx], linewidth=3, alpha=0.9)
+    
+    plt.title("Best Reward Achieved Over Training", 
+             fontsize=20, fontweight='bold', pad=20)
+    plt.xlabel("Episode", fontsize=16, fontweight='bold')
+    plt.ylabel("Best Reward So Far", fontsize=16, fontweight='bold')
+    plt.legend(fontsize=14, loc='best', framealpha=0.95, edgecolor='black', fancybox=True)
+    plt.grid(True, alpha=0.4, linewidth=1)
+    plt.tick_params(labelsize=14)
+    plt.tight_layout()
+    plt.savefig(f'{save_dir}/19_best_episodes.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 20. Comprehensive Summary Dashboard
+    fig = plt.figure(figsize=(20, 12))
+    gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+    
+    # Mini plot 1: Learning curves
+    ax1 = fig.add_subplot(gs[0, :])
+    for idx, (name, data) in enumerate(results_dict.items()):
+        rewards = data['episode_rewards']
+        window = adaptive_window(len(rewards), base_window=500)
+        if len(rewards) > window:
+            smoothed = moving_average(rewards, window=window)
+            episodes = np.arange(len(smoothed))
+            ax1.plot(episodes, smoothed, label=name, color=colors[idx], linewidth=2.5)
+    ax1.set_title('Learning Curves', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Episode', fontsize=11)
+    ax1.set_ylabel('Reward', fontsize=11)
+    ax1.legend(fontsize=10, loc='best')
+    ax1.grid(True, alpha=0.3)
+    
+    # Mini plot 2: Final performance boxplot
+    ax2 = fig.add_subplot(gs[1, 0])
+    final_rewards_mini = []
+    labels_mini = []
+    for name, data in results_dict.items():
+        final_window = data['episode_rewards'][-int(len(data['episode_rewards']) * 0.1):]
+        final_rewards_mini.append(final_window)
+        labels_mini.append(name.replace('_', '\n'))
+    bp = ax2.boxplot(final_rewards_mini, tick_labels=labels_mini, patch_artist=True)
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.6)
+    ax2.set_title('Final Performance', fontsize=12, fontweight='bold')
+    ax2.set_ylabel('Reward', fontsize=10)
+    ax2.tick_params(labelsize=9)
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    # Mini plot 3: Sample efficiency
+    ax3 = fig.add_subplot(gs[1, 1])
+    for idx, (name, data) in enumerate(results_dict.items()):
+        rewards = data['episode_rewards']
+        lengths = data['episode_lengths']
+        cumulative_steps = np.cumsum(lengths)
+        cumulative_rewards = np.cumsum(rewards)
+        if len(cumulative_steps) > 1000:
+            indices = np.linspace(0, len(cumulative_steps)-1, 1000, dtype=int)
+            ax3.plot(cumulative_steps[indices]/1e6, cumulative_rewards[indices], 
+                    color=colors[idx], linewidth=2, label=name)
+    ax3.set_title('Sample Efficiency', fontsize=12, fontweight='bold')
+    ax3.set_xlabel('Timesteps (M)', fontsize=10)
+    ax3.set_ylabel('Cumulative Reward', fontsize=10)
+    ax3.tick_params(labelsize=9)
+    ax3.grid(True, alpha=0.3)
+    
+    # Mini plot 4: Success rate
+    ax4 = fig.add_subplot(gs[1, 2])
+    for idx, (name, data) in enumerate(results_dict.items()):
+        rewards = data['episode_rewards']
+        window = min(500, len(rewards) // 10)
+        if window > 10:
+            success_rate = []
+            episodes = []
+            for i in range(window, len(rewards), window//10):
+                segment = rewards[max(0, i-window):i]
+                rate = np.sum(np.array(segment) > 0) / len(segment) * 100
+                success_rate.append(rate)
+                episodes.append(i)
+            ax4.plot(episodes, success_rate, color=colors[idx], linewidth=2)
+    ax4.set_title('Success Rate', fontsize=12, fontweight='bold')
+    ax4.set_xlabel('Episode', fontsize=10)
+    ax4.set_ylabel('% Positive', fontsize=10)
+    ax4.tick_params(labelsize=9)
+    ax4.grid(True, alpha=0.3)
+    
+    # Mini plot 5: Statistics table
+    ax5 = fig.add_subplot(gs[2, :])
+    ax5.axis('tight')
+    ax5.axis('off')
+    
+    table_data = []
+    for name, data in results_dict.items():
+        rewards = data['episode_rewards']
+        lengths = data['episode_lengths']
+        final_window = rewards[-int(len(rewards) * 0.1):]
+        
+        table_data.append([
+            name,
+            f"{np.mean(final_window):.2f}",
+            f"{np.std(final_window):.2f}",
+            f"{np.max(rewards):.1f}",
+            f"{np.mean(rewards):.2f}",
+            f"{np.sum(lengths)/1e6:.2f}M",
+            f"{len(rewards)}"
+        ])
+    
+    table = ax5.table(cellText=table_data,
+                     colLabels=['Config', 'Final Mean', 'Final Std', 'Best', 'Overall Mean', 'Total Steps', 'Episodes'],
+                     cellLoc='center', loc='center',
+                     colWidths=[0.20, 0.12, 0.12, 0.10, 0.13, 0.13, 0.10])
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 2.5)
+    
+    for i in range(7):
+        table[(0, i)].set_facecolor('#4472C4')
+        table[(0, i)].set_text_props(weight='bold', color='white')
+    
+    for i in range(1, len(table_data) + 1):
+        for j in range(7):
+            if i % 2 == 0:
+                table[(i, j)].set_facecolor('#F0F0F0')
+    
+    fig.suptitle('Training Summary Dashboard', fontsize=22, fontweight='bold', y=0.98)
+    plt.savefig(f'{save_dir}/20_summary_dashboard.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"[SAVED] 20 comprehensive plots saved to {save_dir}/ (no display)")
 
 # ===========================================================
 # MAIN PLOTTING SCRIPT
@@ -447,19 +843,27 @@ def main():
     print("✓ COMPLETE!")
     print("="*60)
     print(f"Plots saved to: saved_agents/plots/")
-    print("Files generated:")
-    print("  1. 1_rewards_confidence.png - Episode rewards with statistical confidence bands")
-    print("  2. 2_smoothed_learning_curves.png - Clean learning curve comparison")
-    print("  3. 3_episode_lengths.png - Survival time over training")
-    print("  4. 4_loss_convergence.png - TD loss convergence (log scale)")
+    print("20 comprehensive plots generated:")
+    print("  1. 1_rewards_confidence.png - Episode rewards with statistical confidence bands (adaptive smoothing)")
+    print("  2. 2_smoothed_learning_curves.png - Clean learning curve comparison (10M timesteps optimized)")
+    print("  3. 3_episode_lengths.png - Survival time over training (adaptive smoothing)")
+    print("  4. 4_loss_convergence.png - TD loss convergence (log scale, high-resolution)")
     print("  5. 5_epsilon_decay.png - Exploration strategy visualization")
-    print("  6. 6_final_performance_boxplot.png - Statistical performance comparison")
+    print("  6. 6_final_performance_boxplot.png - Statistical performance comparison (last 10%)")
     print("  7. 7_learning_efficiency.png - Reward rate per 1000 timesteps")
     print("  8. 8_metrics_table.png - Comprehensive statistics summary")
     print("  9. 9_episode_length_distributions.png - Episode length histograms")
     print("  10. 10_performance_phases.png - Early/Mid/Late game comparison")
     print("  11. 11_convergence_analysis.png - Time to reach reward milestones")
     print("  12. 12_loss_reward_correlation.png - TD loss vs reward relationship")
+    print("  13. 13_sample_efficiency.png - Cumulative reward vs timesteps")
+    print("  14. 14_training_stability.png - Rolling mean and variance analysis")
+    print("  15. 15_milestone_timesteps.png - Sample efficiency to reward milestones")
+    print("  16. 16_score_heatmap.png - Reward distribution heatmap over training")
+    print("  17. 17_success_rate.png - Success rate (positive rewards) over time")
+    print("  18. 18_learning_rate.png - Reward improvement per episode")
+    print("  19. 19_best_episodes.png - Best reward achieved timeline")
+    print("  20. 20_summary_dashboard.png - Comprehensive multi-panel summary")
     
     return 0
 
