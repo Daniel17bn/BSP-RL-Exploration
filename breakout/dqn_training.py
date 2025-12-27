@@ -1,3 +1,22 @@
+"""
+Deep Q-Network (DQN) Implementation for Atari Breakout
+
+This implementation follows the seminal DQN Nature paper:
+"Human-level control through deep reinforcement learning" (Mnih et al., 2015)
+
+Key Features:
+- Convolutional neural network for visual input processing
+- Experience replay buffer for breaking correlation in observation sequences
+- Fixed Q-targets (separate target network) for stable learning
+- Epsilon-greedy exploration with linear annealing
+- Reward clipping and frame stacking as per the original paper
+- Mixed precision training (AMP) for efficient GPU utilization
+- HPC-optimized with checkpoint/resume capability
+
+Author: [Your Name]
+Date: December 2025
+"""
+
 import numpy as np
 import pickle
 import gymnasium as gym
@@ -14,21 +33,36 @@ from torch.amp import autocast
 from torch.cuda.amp import GradScaler
 import os
 import sys
-import cv2  # For proper image resizing to 84x84
+import cv2  # For efficient frame preprocessing
 
 from configs import configs
 
-gym.register_envs(ale_py)
+gym.register_envs(ale_py)  # Register Atari Learning Environment
 
 # ===========================================================
-# DQN NETWORK
+# DQN NETWORK ARCHITECTURE
 # ===========================================================
 
 class DQN(nn.Module):
+    """
+    Deep Q-Network architecture as described in Mnih et al. (2015).
+    
+    Architecture:
+    - 3 convolutional layers for spatial feature extraction from raw pixels
+    - 2 fully connected layers for action-value estimation
+    - Input: 4 stacked grayscale frames (84x84x4)
+    - Output: Q-values for each possible action
+    
+    The convolutional layers learn to detect game-relevant features like
+    ball position, paddle location, and brick patterns.
+    """
     def __init__(self, input_shape, n_actions, hidden_dim=512):
         super(DQN, self).__init__()
         
-        # Convolutional layers for image processing
+        # Convolutional layers: Extract spatial hierarchies from frames
+        # Layer 1: 8x8 kernels with stride 4 - detects basic features (edges, corners)
+        # Layer 2: 4x4 kernels with stride 2 - combines features into patterns
+        # Layer 3: 3x3 kernels with stride 1 - refines high-level features
         self.conv = nn.Sequential(
             nn.Conv2d(input_shape[0], 32, kernel_size=8, stride=4),
             nn.ReLU(),
@@ -57,19 +91,34 @@ class DQN(nn.Module):
         return self.fc(conv_out)
 
 # ===========================================================
-# REPLAY BUFFER
+# EXPERIENCE REPLAY BUFFER
 # ===========================================================
 
 class ReplayBuffer:
-    """Memory-efficient replay buffer with pre-allocated arrays for HPC."""
+    """
+    Experience Replay Buffer: A key innovation from the DQN paper.
+    
+    Purpose: Store and randomly sample past experiences (s, a, r, s', done)
+    to break temporal correlations in the training data.
+    
+    Why it's important:
+    1. Sequential states are highly correlated - training on them directly
+       causes instability and overfitting
+    2. Random sampling from replay buffer creates i.i.d. training batches
+    3. Each experience can be reused multiple times (sample efficiency)
+    4. Smooths out learning by averaging over many past behaviors
+    
+    Memory optimization: Uses uint8 (0-255) instead of float32 (0-1) to
+    reduce memory usage by 4x, crucial for storing 1M transitions.
+    """
     def __init__(self, capacity, state_shape):
         self.capacity = capacity
         self.state_shape = state_shape
-        self.position = 0
-        self.size = 0
+        self.position = 0  # Circular buffer position
+        self.size = 0      # Current buffer size (up to capacity)
         
-        # Pre-allocate arrays with uint8 to save 4x memory (states are 0-255 grayscale)
-        # Convert to float32 only when sampling
+        # Pre-allocate arrays for HPC efficiency
+        # uint8 storage: saves ~16GB of RAM for 1M capacity buffer
         self.states = np.zeros((capacity, *state_shape), dtype=np.uint8)
         self.actions = np.zeros(capacity, dtype=np.int64)
         self.rewards = np.zeros(capacity, dtype=np.float32)
@@ -140,14 +189,27 @@ class DQNAgent:
         self.episodes_done = 0
     
     def select_action(self, state, training=True):
-        """Select action using epsilon-greedy policy."""
+        """
+        Epsilon-Greedy Action Selection: Balances exploration vs exploitation.
+        
+        With probability epsilon: take random action (EXPLORE)
+        With probability (1-epsilon): take best action per Q-network (EXPLOIT)
+        
+        Epsilon decays linearly from 1.0 to 0.05 over training:
+        - Early training: mostly random (learn about environment)
+        - Late training: mostly greedy (exploit learned policy)
+        
+        This strategy is crucial for discovering optimal behaviors while
+        avoiding getting stuck in local optima.
+        """
         if training and random.random() < self.epsilon:
-            return random.randrange(self.n_actions)
+            return random.randrange(self.n_actions)  # Random exploration
         else:
-            with torch.no_grad():
+            # Greedy action: choose action with highest Q-value
+            with torch.no_grad():  # No gradient needed for inference
                 state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
                 q_values = self.policy_net(state_tensor)
-                return q_values.max(1)[1].item()
+                return q_values.max(1)[1].item()  # Argmax over actions
     
     def update_epsilon(self):
         """Linear decay of epsilon."""
@@ -158,11 +220,24 @@ class DQNAgent:
             self.epsilon = self.epsilon_end
     
     def train_step(self):
-        """Perform one training step with mixed precision support."""
+        """
+        Perform one DQN training step using the Bellman equation.
+        
+        Training algorithm:
+        1. Sample random minibatch from replay buffer (breaks correlation)
+        2. Compute Q(s,a) using policy network
+        3. Compute target: r + γ * max_a' Q_target(s',a') using target network
+        4. Minimize loss: L = (Q - target)²
+        5. Update policy network parameters via gradient descent
+        
+        Key innovation: Use separate target network (updated periodically)
+        to compute Q-targets. This prevents the "chasing a moving target"
+        problem that destabilizes standard Q-learning.
+        """
         if len(self.replay_buffer) < self.batch_size:
             return None
         
-        # Sample batch
+        # Sample random minibatch: breaks temporal correlation
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
         
         # Convert to tensors (non_blocking for async GPU transfer)
@@ -177,17 +252,22 @@ class DQNAgent:
             torch.cuda.empty_cache()
         
         if self.use_amp:
-            # Mixed precision training for ~2-3x speedup
+            # Mixed precision training: Use FP16 for ~2-3x speedup on modern GPUs
+            # Automatically maintains FP32 master weights for numerical stability
             with autocast(device_type='cuda', dtype=torch.float16):
-                # Current Q values
+                # Q(s,a): Extract Q-values for actions actually taken
+                # gather() selects Q-value for the specific action index
                 current_q = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
                 
-                # Target Q values
-                with torch.no_grad():
-                    next_q = self.target_net(next_states).max(1)[0]
+                # Bellman target: r + γ * max_a' Q_target(s', a')
+                # Use target network (not policy net) for stability
+                with torch.no_grad():  # No gradients for target computation
+                    next_q = self.target_net(next_states).max(1)[0]  # max over actions
                     target_q = rewards + self.gamma * next_q * (1 - dones)
+                    # Note: (1 - dones) zeros out future rewards for terminal states
                 
-                # Compute loss
+                # Temporal Difference (TD) Loss: Huber loss is less sensitive to outliers
+                # than MSE, providing more stable training
                 loss = F.smooth_l1_loss(current_q, target_q)
             
             # Optimize with gradient scaling
@@ -238,21 +318,42 @@ class DQNAgent:
         self.episodes_done = checkpoint['episodes_done']
 
 # ===========================================================
-# PREPROCESSING
+# FRAME PREPROCESSING (Following DQN Nature Paper)
 # ===========================================================
 
 def preprocess_frame(frame):
-    """Convert frame to grayscale and resize to 84x84 (DQN Nature paper standard)."""
-    # Convert to grayscale
+    """
+    Preprocess Atari frames to reduce dimensionality and computational cost.
+    
+    Steps (as per Mnih et al., 2015):
+    1. Convert RGB to grayscale (210x160x3 → 210x160x1)
+       - Color is not essential for Breakout gameplay
+       - Reduces input size by 3x
+    2. Crop score area (210x160 → 160x160)
+       - Score/lives at top don't help agent learn gameplay
+       - Focuses network attention on playfield
+    3. Resize to 84x84 for computational efficiency
+       - Standard size used across all Atari games
+    4. Normalize to [0,1] for neural network input stability
+    """
+    # Luminance conversion: weighted sum matching human perception
     gray = np.dot(frame[..., :3], [0.299, 0.587, 0.114])
-    # Crop to remove score area (standard crop for Breakout)
-    cropped = gray[34:194, :]  # 160 rows x 160 cols
-    # Resize to 84x84 using OpenCV (standard interpolation)
+    # Remove score display at top of screen
+    cropped = gray[34:194, :]  # Keep only game playfield
+    # Downsample to standard 84x84 (reduces computation)
     resized = cv2.resize(cropped, (84, 84), interpolation=cv2.INTER_AREA)
-    return resized.astype(np.float32) / 255.0
+    return resized.astype(np.float32) / 255.0  # Normalize to [0,1]
 
 class FrameStack:
-    """Stack last N frames for input to network."""
+    """
+    Frame Stacking: Stack last 4 frames to provide motion information.
+    
+    Why needed: A single frame doesn't show velocity/direction.
+    Example: Looking at one frame, you can't tell if ball is moving up or down.
+    With 4 frames stacked, the network can infer motion from position changes.
+    
+    This gives the network temporal context without explicit motion detection.
+    """
     def __init__(self, n_frames=4):
         self.n_frames = n_frames
         self.frames = deque(maxlen=n_frames)
@@ -275,11 +376,29 @@ class FrameStack:
         return np.array(self.frames)
 
 # ===========================================================
-# TRAINING FUNCTION
+# MAIN TRAINING LOOP
 # ===========================================================
 
 def train_dqn(env, agent, params, config_name, checkpoint_path=None):
-    """Train DQN agent with checkpointing support for HPC."""
+    """
+    Main DQN training loop following the algorithm from Mnih et al. (2015).
+    
+    Training procedure:
+    1. Initialize replay buffer D
+    2. For each timestep:
+       a) Select action using epsilon-greedy
+       b) Execute action, observe reward and next state
+       c) Store transition in replay buffer
+       d) Sample random minibatch from D
+       e) Perform gradient descent step on (y - Q)²
+       f) Every C steps, update target network Q_target = Q
+    
+    Enhancements:
+    - Checkpoint/resume for long HPC training runs
+    - Life-loss handling specific to Breakout
+    - Progress tracking and logging
+    - Mixed precision training for efficiency
+    """
     
     # Tracking metrics
     episode_rewards = []
@@ -341,24 +460,34 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
 
         next_obs, reward, terminated, truncated, info = env.step(action)
 
-        # CRITICAL: Clip reward to [-1, 1] (DQN Nature paper standard for Atari)
-        # This stabilizes learning by preventing large reward variations
-        reward = np.sign(reward)  # Equivalent to clipping to [-1, 0, 1]
+        # CRITICAL: Reward Clipping (DQN Nature paper, Section 4)
+        # Clip all rewards to {-1, 0, +1} to:
+        # 1. Prevent large reward magnitudes from dominating gradient updates
+        # 2. Enable same learning rate across all Atari games
+        # 3. Limit scale of error derivatives for more stable learning
+        # In Breakout: breaking brick (1-7 points) all become +1
+        reward = np.sign(reward)  # Maps any positive reward to +1
 
-        # Breakout life-loss handling (DQN Nature paper approach):
-        # When life is lost, treat it as terminal for Q-learning (done=True in replay buffer)
-        # but continue the episode without resetting the environment
+        # Life-Loss as Episode Boundary (Important for Breakout!)
+        # Problem: Breakout has 5 lives - if we only end episode when all lives
+        # are lost, the agent gets delayed feedback about mistakes.
+        # 
+        # Solution: Treat each life loss as a "mini-episode" for Q-learning:
+        # - Store done=True in replay buffer when life is lost
+        # - This teaches agent that life loss = bad (immediate penalty signal)
+        # - But continue same episode for statistics tracking
+        # 
+        # This technique significantly speeds up learning in multi-life games.
         new_lives = info.get('lives', lives)
         life_lost = (new_lives < lives)
         if life_lost:
             lives = new_lives
-            need_fire = True
+            need_fire = True  # Need to press FIRE to launch ball after life loss
 
-        # For replay buffer: done=True if life lost OR episode truly ended
-        # This helps the agent learn that losing a life is bad
+        # Q-learning treats life loss as terminal (better credit assignment)
         done_for_replay = life_lost or terminated or truncated
         
-        # For episode termination: only end when all lives exhausted or truncated
+        # Episode only truly ends when all lives exhausted
         real_done = (lives == 0) or truncated
         
         # Process next state
@@ -378,7 +507,11 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
             if loss is not None:
                 losses.append(loss)
         
-        # Update target network
+        # Periodic Target Network Update (every C=1000 steps)
+        # Why separate networks?
+        # Without: Q-values and targets both change → "chasing moving target" → divergence
+        # With: Targets stable for C steps → more stable gradient updates → convergence
+        # This is one of the key innovations that made DQN work!
         if step % params.target_update_frequency == 0:
             agent.update_target_network()
         
@@ -472,14 +605,17 @@ def train_single_config(config_idx, gpu_id=0, num_gpus=1):
         
         params = config['params']
         
-        # Set random seeds for reproducibility
-        torch.manual_seed(params.seed + config_idx)
-        np.random.seed(params.seed + config_idx)
-        random.seed(params.seed + config_idx)
+        # Set all random seeds for reproducible experiments
+        # Different configs get different seeds (params.seed + config_idx)
+        # to ensure independent runs while maintaining reproducibility
+        torch.manual_seed(params.seed + config_idx)        # PyTorch CPU
+        np.random.seed(params.seed + config_idx)           # NumPy
+        random.seed(params.seed + config_idx)              # Python random
         if torch.cuda.is_available():
-            torch.cuda.manual_seed(params.seed + config_idx)
-            torch.cuda.manual_seed_all(params.seed + config_idx)  # For multi-GPU
-            # For full determinism (may reduce performance)
+            torch.cuda.manual_seed(params.seed + config_idx)      # PyTorch CUDA
+            torch.cuda.manual_seed_all(params.seed + config_idx)  # All GPUs
+            # Deterministic mode: same inputs → same outputs (at cost of speed)
+            # Essential for scientific reproducibility and debugging
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
         

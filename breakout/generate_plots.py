@@ -1,7 +1,23 @@
 """
-Generate comparison plots from saved training data.
-Run this AFTER all SLURM jobs complete to visualize results.
+Comprehensive Visualization Suite for Deep Reinforcement Learning Analysis
 
+This script generates 20 publication-quality plots for analyzing DQN training results
+on Atari Breakout. The visualizations cover multiple dimensions of learning:
+- Performance metrics (rewards, success rates)
+- Sample efficiency (learning speed)
+- Training stability (variance, convergence)
+- Behavioral analysis (exploration, best episodes)
+
+Designed for scientific reporting and comparative analysis of different
+hyperparameter configurations.
+
+Outputs:
+- 20 high-resolution PNG plots (300 DPI) suitable for academic papers
+- Adaptive smoothing for 10M+ timestep training runs
+- Memory-efficient processing for large-scale experiments
+
+Author: [Your Name]
+Date: December 2025
 """
 
 import pickle
@@ -15,11 +31,24 @@ import matplotlib.pyplot as plt
 from configs import configs
 
 # ===========================================================
-# PLOTTING FUNCTIONS
+# SMOOTHING UTILITIES
 # ===========================================================
 
 def moving_average(x, window=100):
-    """Calculate moving average for smoothing plots."""
+    """
+    Calculate moving average for smoothing noisy training curves.
+    
+    Why needed: Raw episode rewards are extremely noisy in RL due to:
+    - Stochastic environment dynamics
+    - Epsilon-greedy exploration causing suboptimal actions
+    - Inherent variance in game outcomes
+    
+    Moving average reveals underlying learning trends by averaging
+    over neighboring data points.
+    
+    Method: Convolution with uniform kernel (simple and efficient)
+    Returns: Smoothed array (length reduced by window-1 due to mode='valid')
+    """
     if len(x) < window:
         window = max(1, len(x))
     if window <= 1:
@@ -27,7 +56,18 @@ def moving_average(x, window=100):
     return np.convolve(x, np.ones(window) / window, mode='valid')
 
 def adaptive_window(data_length, base_window=100, target_points=1000):
-    """Calculate adaptive smoothing window based on data length."""
+    """
+    Calculate adaptive smoothing window based on dataset size.
+    
+    Problem: Fixed window size works poorly across different training lengths:
+    - Too small for long runs (10M steps): still noisy
+    - Too large for short runs (1M steps): over-smoothed, lose detail
+    
+    Solution: Scale window with data length while targeting ~1000 points
+    for visualization (good balance of detail and smoothness).
+    
+    This ensures consistent visual quality across different experiment scales.
+    """
     # For 10M timesteps, we want smoother curves
     if data_length > 50000:  # Very long training
         return max(base_window, data_length // target_points)
@@ -37,11 +77,29 @@ def adaptive_window(data_length, base_window=100, target_points=1000):
         return base_window
 
 def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
-    """Plot comprehensive training results for deep RL research."""
+    """
+    Generate comprehensive training analysis plots.
+    
+    This function creates 20 different visualizations covering:
+    - Learning curves and convergence
+    - Statistical performance metrics
+    - Sample efficiency comparisons
+    - Training stability analysis
+    - Behavioral patterns
+    
+    All plots use adaptive smoothing for clarity and are optimized
+    for large-scale experiments (10M+ timesteps).
+    """
     
     colors = plt.cm.tab10(np.linspace(0, 1, len(results_dict)))
     
-    # 1. Episode rewards with confidence intervals
+    # ===========================================================
+    # PLOT 1: Episode Rewards with Confidence Intervals
+    # ===========================================================
+    # Purpose: Show learning progress with uncertainty quantification
+    # Key insight: Width of confidence band indicates training stability
+    # - Narrow band = stable, consistent learning
+    # - Wide band = high variance, unstable training
     plt.figure(figsize=(16, 8))
     for idx, (name, data) in enumerate(results_dict.items()):
         rewards = data['episode_rewards']
@@ -50,7 +108,10 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
             smoothed = moving_average(rewards, window=window)
             episodes = np.arange(len(smoothed))
             
-            # Calculate rolling std for confidence band (downsample for efficiency)
+            # Calculate rolling standard deviation for confidence bands
+            # Why: Shows how much variability exists around the mean trend
+            # High std = unpredictable performance, low std = reliable agent
+            # Downsampled for computational efficiency on large datasets
             half_window = window // 2
             rewards_padded = np.pad(rewards, (half_window, half_window), mode='edge')
             stride = max(1, len(rewards) // 5000)  # Limit to 5000 points for efficiency
@@ -74,7 +135,14 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/1_rewards_confidence.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 2. Smoothed learning curves (clean comparison)
+    # ===========================================================
+    # PLOT 2: Smoothed Learning Curves
+    # ===========================================================
+    # Purpose: Clean comparison of learning speed across configurations
+    # Key questions answered:
+    # - Which hyperparameters lead to fastest learning?
+    # - Does any config achieve higher final performance?
+    # - Are there learning plateaus or continuous improvement?
     plt.figure(figsize=(16, 8))
     for idx, (name, data) in enumerate(results_dict.items()):
         rewards = data['episode_rewards']
@@ -93,7 +161,15 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/2_smoothed_learning_curves.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 3. Episode lengths and survival time
+    # ===========================================================
+    # PLOT 3: Episode Survival Time
+    # ===========================================================
+    # Purpose: Track how long agent survives (proxy for skill)
+    # In Breakout: Longer episodes = agent keeps ball alive longer
+    # Interpretation:
+    # - Increasing trend = agent learning to play defensively
+    # - High values = skilled at paddle control
+    # - Correlation with rewards shows if survival → scoring
     plt.figure(figsize=(16, 8))
     for idx, (name, data) in enumerate(results_dict.items()):
         lengths = data['episode_lengths']
@@ -112,7 +188,18 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/3_episode_lengths.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 4. Training loss convergence
+    # ===========================================================
+    # PLOT 4: TD Loss Convergence
+    # ===========================================================
+    # Purpose: Monitor training objective (temporal difference error)
+    # TD Loss = (Q_predicted - Q_target)²
+    # 
+    # Expected pattern: Decrease then stabilize
+    # - Decreasing = network learning to predict values accurately
+    # - Log scale reveals convergence even when loss is small
+    # - Plateau indicates learning has converged
+    # 
+    # Note: Loss can increase if agent explores new strategies!
     plt.figure(figsize=(16, 8))
     for idx, (name, data) in enumerate(results_dict.items()):
         losses = data['losses']
@@ -147,7 +234,19 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/5_epsilon_decay.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 6. Final performance comparison (boxplot)
+    # ===========================================================
+    # PLOT 6: Final Performance Distribution (Boxplot)
+    # ===========================================================
+    # Purpose: Statistical comparison of fully-trained agents
+    # Uses last 10% of training (converged policy) for fair comparison
+    # 
+    # Boxplot components:
+    # - Box = interquartile range (25th-75th percentile)
+    # - Red line = median performance (robust to outliers)
+    # - Whiskers = data range (excluding outliers)
+    # - Notches = confidence intervals (non-overlapping = significant difference)
+    # 
+    # This answers: "Which config is reliably best?"
     plt.figure(figsize=(14, 8))
     final_rewards = []
     labels = []
@@ -176,7 +275,18 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/6_final_performance_boxplot.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 7. Reward rate over time (reward per 1000 timesteps)
+    # ===========================================================
+    # PLOT 7: Learning Efficiency (Reward Rate)
+    # ===========================================================
+    # Purpose: Measure reward accumulation speed
+    # Metric: Reward per 1000 timesteps (controls for episode length)
+    # 
+    # Why important:
+    # - Two agents might reach same final performance but at different speeds
+    # - Higher efficiency = better sample efficiency
+    # - Useful for comparing wall-clock training time
+    # 
+    # Interpretation: Higher line = faster learning
     plt.figure(figsize=(12, 6))
     for idx, (name, data) in enumerate(results_dict.items()):
         rewards = data['episode_rewards']
@@ -410,7 +520,17 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/12_loss_reward_correlation.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 13. Sample Efficiency - Cumulative Reward vs Timesteps
+    # ===========================================================
+    # PLOT 13: Sample Efficiency (Cumulative Reward)
+    # ===========================================================
+    # Purpose: Compare total learning progress vs environment interactions
+    # 
+    # Key metric in RL: Sample efficiency
+    # - How many timesteps needed to achieve good performance?
+    # - Steeper slope = more sample efficient
+    # - Earlier convergence = faster learner
+    # 
+    # Critical for real-world applications where data collection is expensive
     plt.figure(figsize=(16, 8))
     for idx, (name, data) in enumerate(results_dict.items()):
         rewards = data['episode_rewards']
@@ -439,7 +559,21 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/13_sample_efficiency.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 14. Training Stability - Rolling Variance and Mean
+    # ===========================================================
+    # PLOT 14: Training Stability Analysis
+    # ===========================================================
+    # Purpose: Diagnose training dynamics and stability
+    # 
+    # Two panels:
+    # 1. Rolling Mean: Shows learning trajectory (similar to learning curves)
+    # 2. Rolling Variance: Shows training stability over time
+    # 
+    # Ideal pattern for variance:
+    # - High initially (exploring, unstable)
+    # - Decreases over time (policy stabilizing)
+    # - Low at end (converged, consistent behavior)
+    # 
+    # High variance throughout = unstable/noisy training (potential hyperparameter issue)
     fig, axes = plt.subplots(2, 1, figsize=(16, 10))
     fig.suptitle('Training Stability Analysis', fontsize=20, fontweight='bold')
     
@@ -478,7 +612,21 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/14_training_stability.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 15. Performance Milestones - Timesteps to reach key rewards
+    # ===========================================================
+    # PLOT 15: Sample Efficiency to Milestones
+    # ===========================================================
+    # Purpose: Quantify learning speed to specific performance thresholds
+    # 
+    # Key question: How many timesteps to reach reward X?
+    # 
+    # Comparison method:
+    # - Lower bars = fewer timesteps needed = more sample efficient
+    # - Missing bars = milestone never reached during training
+    # 
+    # Useful for:
+    # - Identifying which configs learn fastest
+    # - Estimating training budget for desired performance
+    # - Comparing early vs late-game learning rates
     plt.figure(figsize=(12, 8))
     
     milestones = [5, 10, 20, 30, 40, 50]
@@ -529,7 +677,22 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/15_milestone_timesteps.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 16. Score Heatmap Over Time
+    # ===========================================================
+    # PLOT 16: Reward Distribution Heatmap
+    # ===========================================================
+    # Purpose: Visualize how reward distribution evolves during training
+    # 
+    # Reading the heatmap:
+    # - X-axis: Training progress (0% → 100%)
+    # - Y-axis: Reward bins (from negative to high scores)
+    # - Color intensity: Frequency of rewards in that range
+    # 
+    # Learning pattern visualization:
+    # - Early: Concentration at low rewards (unskilled play)
+    # - Middle: Distribution shifts upward (improving)
+    # - Late: Peak at higher rewards (skilled, consistent)
+    # 
+    # Red regions = common reward ranges at that training stage
     fig, axes = plt.subplots(1, min(3, len(results_dict)), figsize=(18, 5))
     if len(results_dict) == 1:
         axes = [axes]
@@ -570,7 +733,21 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/16_score_heatmap.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 17. Success Rate Over Time
+    # ===========================================================
+    # PLOT 17: Success Rate Over Time
+    # ===========================================================
+    # Purpose: Track proportion of successful episodes
+    # Success defined: Episodes with positive reward (scored points)
+    # 
+    # Why important:
+    # - In early training, agent might score 0 points (100% failure)
+    # - As learning progresses, success rate should increase
+    # - Final success rate indicates policy reliability
+    # 
+    # Interpretation:
+    # - Increasing trend = agent learning to score consistently
+    # - 100% = agent always scores (never gets shutout)
+    # - Plateaus below 100% = some inherent difficulty/stochasticity
     plt.figure(figsize=(16, 8))
     
     for idx, (name, data) in enumerate(results_dict.items()):
@@ -601,7 +778,20 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/17_success_rate.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 18. Learning Rate (Improvement Per Episode)
+    # ===========================================================
+    # PLOT 18: Learning Rate (Improvement Speed)
+    # ===========================================================
+    # Purpose: Measure instantaneous rate of improvement
+    # Metric: Derivative of smoothed reward curve
+    # 
+    # Positive values = improving
+    # Negative values = performance degrading (rare, but possible during exploration)
+    # Zero = plateau (learning stalled)
+    # 
+    # Useful for:
+    # - Identifying learning phases (rapid improvement vs plateau)
+    # - Detecting when to stop training (prolonged plateau)
+    # - Comparing learning dynamics across configs
     plt.figure(figsize=(16, 8))
     
     for idx, (name, data) in enumerate(results_dict.items()):
@@ -633,7 +823,20 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/18_learning_rate.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 19. Best Episodes Timeline
+    # ===========================================================
+    # PLOT 19: Best Reward Progression
+    # ===========================================================
+    # Purpose: Track peak performance achieved over time
+    # 
+    # This plot shows: At any point, what's the best the agent has EVER done?
+    # 
+    # Why track this:
+    # - Shows exploration success (finding high-reward strategies)
+    # - Monotonically increasing (never decreases)
+    # - Rapid initial climb = discovering better strategies
+    # - Plateau = reaching skill ceiling
+    # 
+    # Different from average reward: Shows potential vs typical performance
     plt.figure(figsize=(16, 8))
     
     for idx, (name, data) in enumerate(results_dict.items()):
@@ -662,7 +865,22 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
     plt.savefig(f'{save_dir}/19_best_episodes.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 20. Comprehensive Summary Dashboard
+    # ===========================================================
+    # PLOT 20: Comprehensive Summary Dashboard
+    # ===========================================================
+    # Purpose: Single-page overview of all key metrics
+    # 
+    # Perfect for:
+    # - Presentations (one slide with complete picture)
+    # - Quick comparison of multiple configs
+    # - Report executive summary
+    # 
+    # Includes:
+    # - Learning curves (main result)
+    # - Final performance distribution (statistical summary)
+    # - Sample efficiency (cost analysis)
+    # - Success rate (reliability)
+    # - Detailed statistics table (quantitative comparison)
     fig = plt.figure(figsize=(20, 12))
     gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
     
@@ -784,7 +1002,28 @@ def plot_training_results(results_dict, save_dir='saved_agents/plots2'):
 # ===========================================================
 
 def main():
-    """Load all saved training data and generate comparison plots."""
+    """
+    Load saved training data and generate all visualization plots.
+    
+    Workflow:
+    1. Load training_data.pkl files from each config's saved_agents/ folder
+    2. Validate data availability (warn about missing configs)
+    3. Generate 20 comprehensive plots comparing all configs
+    4. Save as publication-quality PNG files (300 DPI)
+    
+    Expected data structure:
+    saved_agents/
+      ConfigName/
+        data/
+          training_data.pkl  <- Contains: episode_rewards, episode_lengths,
+                                          episode_epsilons, losses
+        models/
+          final.pt
+        checkpoints/
+          ...
+    
+    Output: saved_agents/plots/ directory with 20 PNG files
+    """
     
     print("="*60)
     print("Loading training results for plotting...")
@@ -793,7 +1032,8 @@ def main():
     results = {}
     missing_configs = []
     
-    # Load data for each config
+    # Load training data from each configuration
+    # Each config should have saved its results during training
     for config in configs:
         config_name = config['name']
         data_path = f"saved_agents/{config_name.replace(' ', '_')}/data/training_data.pkl"
