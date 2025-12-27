@@ -2,17 +2,6 @@ from params import Params
 
 TOTAL_TIMESTEPS = 10_000_000
 
-# Experiment 1: Breakout DQN - Three Contrasting Strategies
-# Compare different learning philosophies to identify what matters most for Breakout
-#
-# CRITICAL FIXES APPLIED (Based on DQN Nature Paper):
-# ✓ Reward clipping to [-1, +1] - Essential for Atari learning stability
-# ✓ Life-loss treated as terminal for Q-learning (but episode continues)
-# ✓ Standard 84x84 frame preprocessing
-# ✓ Random no-op starts (0-30 frames) for stochasticity
-# ✓ Gradient clipping (max_norm=10)
-# ✓ Frame stacking (4 frames)
-# ✓ Target network updates every N steps
 configs = [
     # Config 1: Baseline - Standard DQN (Nature paper settings adapted for Breakout)
     # Expected: Steady, reliable learning. Should reach 30-50 points by 10M steps.
