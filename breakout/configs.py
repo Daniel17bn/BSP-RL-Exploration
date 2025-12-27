@@ -4,8 +4,18 @@ TOTAL_TIMESTEPS = 10_000_000
 
 # Experiment 1: Breakout DQN - Three Contrasting Strategies
 # Compare different learning philosophies to identify what matters most for Breakout
+#
+# CRITICAL FIXES APPLIED (Based on DQN Nature Paper):
+# ✓ Reward clipping to [-1, +1] - Essential for Atari learning stability
+# ✓ Life-loss treated as terminal for Q-learning (but episode continues)
+# ✓ Standard 84x84 frame preprocessing
+# ✓ Random no-op starts (0-30 frames) for stochasticity
+# ✓ Gradient clipping (max_norm=10)
+# ✓ Frame stacking (4 frames)
+# ✓ Target network updates every N steps
 configs = [
     # Config 1: Baseline - Standard DQN (Nature paper settings adapted for Breakout)
+    # Expected: Steady, reliable learning. Should reach 30-50 points by 10M steps.
     {
         "name": "Baseline",
         "params": Params(
@@ -15,9 +25,9 @@ configs = [
             epsilon_start=1.0,
             epsilon_end=0.05,
             epsilon_decay_steps=5_000_000,   # 50% of training
-            buffer_size=1_000_000,
+            buffer_size=1_000_000,            # 1M buffer with uint8
             batch_size=32,
-            learning_starts=100_000,
+            learning_starts=100_000,          # Start training after 100k steps
             target_update_frequency=1_000,
             train_frequency=4,
             hidden_dim=512,
@@ -28,20 +38,21 @@ configs = [
         )
     },
 
-    # Config 2: Fast Learner - Aggressive learning with higher LR and frequent updates
-    # Hypothesis: Faster convergence may help in simple environments like Breakout
+    # Config 2: Fast Learner - Aggressive but stable learning
+    # Hypothesis: Faster initial learning with frequent updates achieves good results sooner
+    # Expected: Quick early gains, potential for 40-60+ points with stable convergence
     {
         "name": "Fast_Learner",
         "params": Params(
             total_timesteps=TOTAL_TIMESTEPS,
-            learning_rate=2.5e-4,            # 2.5x higher learning rate
+            learning_rate=1.5e-4,            # 1.5x higher learning rate (stable)
             gamma=0.99,
             epsilon_start=1.0,
             epsilon_end=0.05,
-            epsilon_decay_steps=2_000_000,   # Fast epsilon decay (20% of training)
+            epsilon_decay_steps=3_000_000,   # 30% - Quick but not rushed
             buffer_size=1_000_000,
-            batch_size=64,                   # Larger batch for stability with high LR
-            learning_starts=100_000,
+            batch_size=64,                   # Larger batch for stability
+            learning_starts=80_000,          # Start slightly earlier
             target_update_frequency=500,     # 2x more frequent target updates
             train_frequency=4,
             hidden_dim=512,
@@ -52,8 +63,9 @@ configs = [
         )
     },
 
-    # Config 3: Deep Explorer - Extended exploration with higher final epsilon
-    # Hypothesis: Thorough exploration may discover better long-term strategies
+    # Config 3: Deep Explorer - Extended exploration with conservative updates
+    # Hypothesis: Thorough exploration discovers diverse strategies and better long-term play
+    # Expected: Slower initial learning, potentially higher final performance (50-80+ points)
     {
         "name": "Deep_Explorer",
         "params": Params(
@@ -61,12 +73,12 @@ configs = [
             learning_rate=1e-4,
             gamma=0.99,
             epsilon_start=1.0,
-            epsilon_end=0.10,                # Keep 10% exploration indefinitely
-            epsilon_decay_steps=8_000_000,   # Explore for 80% of training
+            epsilon_end=0.07,                # Mild continued exploration (7%)
+            epsilon_decay_steps=7_000_000,   # Explore for 70% of training
             buffer_size=1_000_000,
             batch_size=32,
-            learning_starts=100_000,
-            target_update_frequency=2_000,   # Slower, more stable target updates
+            learning_starts=120_000,         # More data before training
+            target_update_frequency=1_500,   # More conservative target updates
             train_frequency=4,
             hidden_dim=512,
             seed=42,

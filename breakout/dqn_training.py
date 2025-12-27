@@ -10,9 +10,11 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.multiprocessing as mp
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast
+from torch.cuda.amp import GradScaler
 import os
 import sys
+import cv2  # For proper image resizing to 84x84
 
 from configs import configs
 
@@ -176,7 +178,7 @@ class DQNAgent:
         
         if self.use_amp:
             # Mixed precision training for ~2-3x speedup
-            with autocast():
+            with autocast(device_type='cuda', dtype=torch.float16):
                 # Current Q values
                 current_q = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
                 
@@ -228,7 +230,7 @@ class DQNAgent:
     
     def load(self, filepath):
         """Load agent state."""
-        checkpoint = torch.load(filepath)
+        checkpoint = torch.load(filepath, map_location=self.device)
         self.policy_net.load_state_dict(checkpoint['policy_net'])
         self.target_net.load_state_dict(checkpoint['target_net'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
@@ -244,10 +246,9 @@ def preprocess_frame(frame):
     # Convert to grayscale
     gray = np.dot(frame[..., :3], [0.299, 0.587, 0.114])
     # Crop to remove score area (standard crop for Breakout)
-    cropped = gray[34:194, :]  # 160 rows
-    # Resize to 84x84 using simple downsampling
-    # 160 rows -> 84 rows, 160 cols -> 84 cols
-    resized = cropped[::2, ::2][:84, :84]  # Ensure exact 84x84
+    cropped = gray[34:194, :]  # 160 rows x 160 cols
+    # Resize to 84x84 using OpenCV (standard interpolation)
+    resized = cv2.resize(cropped, (84, 84), interpolation=cv2.INTER_AREA)
     return resized.astype(np.float32) / 255.0
 
 class FrameStack:
@@ -301,6 +302,15 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
         episode_epsilons = checkpoint_data['episode_epsilons']
         losses = checkpoint_data['losses']
         start_step = checkpoint_data['step']
+        
+        # Load agent model state
+        model_checkpoint_path = os.path.join(
+            os.path.dirname(checkpoint_path), 
+            f'step_{start_step}.pt'
+        )
+        if os.path.exists(model_checkpoint_path):
+            agent.load(model_checkpoint_path)
+            print(f"Loaded agent state from {model_checkpoint_path}")
     
     # Frame stacker
     frame_stack = FrameStack(n_frames=4)
@@ -321,7 +331,7 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
     
     pbar = tqdm(total=params.total_timesteps, initial=start_step, desc=f"Training {config_name}")
     
-    for step in range(params.total_timesteps):
+    for step in range(start_step, params.total_timesteps):
         # Select and perform action
         if need_fire:
             action = 1  # FIRE
@@ -411,15 +421,15 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
         
         # Save checkpoint (model + training state)
         if (step + 1) % params.save_interval == 0:
-            config_folder = f"saved_agents/{config_name.replace(' ', '_')}"
-            os.makedirs(f"{config_folder}/checkpoints", exist_ok=True)
+            config_folder = os.path.join("saved_agents", config_name.replace(' ', '_'))
+            os.makedirs(os.path.join(config_folder, "checkpoints"), exist_ok=True)
             
             # Save model checkpoint
-            save_path = f"{config_folder}/checkpoints/step_{step+1}.pt"
+            save_path = os.path.join(config_folder, "checkpoints", f"step_{step+1}.pt")
             agent.save(save_path)
             
             # Save full checkpoint for resumption
-            checkpoint_path = f"{config_folder}/checkpoints/checkpoint.pkl"
+            checkpoint_path = os.path.join(config_folder, "checkpoints", "checkpoint.pkl")
             with open(checkpoint_path, 'wb') as f:
                 pickle.dump({
                     'episode_rewards': episode_rewards,
@@ -446,65 +456,79 @@ def train_dqn(env, agent, params, config_name, checkpoint_path=None):
 
 def train_single_config(config_idx, gpu_id=0, num_gpus=1):
     """Train a single configuration (for parallel execution)."""
-    config = configs[config_idx]
-    
-    # Set device
-    if torch.cuda.is_available() and gpu_id < torch.cuda.device_count():
-        device = torch.device(f"cuda:{gpu_id}")
-    else:
-        device = torch.device("cpu")
-    
-    print(f"\n{'='*60}")
-    print(f"Training {config['name']} on {device}")
-    print(f"{'='*60}")
-    
-    params = config['params']
-    
-    # Set random seeds
-    torch.manual_seed(params.seed + config_idx)
-    np.random.seed(params.seed + config_idx)
-    random.seed(params.seed + config_idx)
-    
-    # Create environment
-    env = gym.make('ALE/Breakout-v5', render_mode=params.render_mode)
-    
-    # Get state and action dimensions
-    obs, _ = env.reset()
-    n_actions = env.action_space.n
-    state_shape = (4, 84, 84)  # 4 stacked 84x84 frames (DQN Nature standard)
-    
-    # Create agent with mixed precision training
-    agent = DQNAgent(state_shape, n_actions, params, device, use_amp=True)
-    
-    # Create organized folder structure for this config
-    config_folder = f"saved_agents/{config['name'].replace(' ', '_')}"
-    os.makedirs(f"{config_folder}/models", exist_ok=True)
-    os.makedirs(f"{config_folder}/data", exist_ok=True)
-    os.makedirs(f"{config_folder}/checkpoints", exist_ok=True)
-    
-    # Check for checkpoint
-    checkpoint_path = f"{config_folder}/checkpoints/checkpoint.pkl"
-    
-    # Train
-    training_results = train_dqn(env, agent, params, config['name'], checkpoint_path)
-    
-    # Save final model
-    final_path = f"{config_folder}/models/final.pt"
-    agent.save(final_path)
-    print(f"Saved final model to {final_path}")
-    
-    # Save training data
-    data_path = f"{config_folder}/data/training_data.pkl"
-    with open(data_path, 'wb') as f:
-        pickle.dump({
-            'results': training_results,
-            'params': params,
-            'config_name': config['name']
-        }, f)
-    print(f"Saved training data to {data_path}")
-    
-    env.close()
-    return config['name'], training_results
+    try:
+        config = configs[config_idx]
+        
+        # Set device
+        if torch.cuda.is_available() and gpu_id < torch.cuda.device_count():
+            torch.cuda.set_device(gpu_id)  # Critical for HPC multi-GPU
+            device = torch.device(f"cuda:{gpu_id}")
+        else:
+            device = torch.device("cpu")
+        
+        print(f"\n{'='*60}")
+        print(f"Training {config['name']} on {device}")
+        print(f"{'='*60}")
+        
+        params = config['params']
+        
+        # Set random seeds for reproducibility
+        torch.manual_seed(params.seed + config_idx)
+        np.random.seed(params.seed + config_idx)
+        random.seed(params.seed + config_idx)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(params.seed + config_idx)
+            torch.cuda.manual_seed_all(params.seed + config_idx)  # For multi-GPU
+            # For full determinism (may reduce performance)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+        
+        # Create environment
+        env = gym.make('ALE/Breakout-v5', render_mode=params.render_mode)
+        
+        # Get state and action dimensions
+        obs, _ = env.reset()
+        n_actions = env.action_space.n
+        state_shape = (4, 84, 84)  # 4 stacked 84x84 frames (DQN Nature standard)
+        
+        # Create agent with mixed precision training
+        agent = DQNAgent(state_shape, n_actions, params, device, use_amp=True)
+        
+        # Create organized folder structure for this config
+        config_folder = os.path.join("saved_agents", config['name'].replace(' ', '_'))
+        os.makedirs(os.path.join(config_folder, "models"), exist_ok=True)
+        os.makedirs(os.path.join(config_folder, "data"), exist_ok=True)
+        os.makedirs(os.path.join(config_folder, "checkpoints"), exist_ok=True)
+        
+        # Check for checkpoint
+        checkpoint_path = os.path.join(config_folder, "checkpoints", "checkpoint.pkl")
+        
+        # Train
+        training_results = train_dqn(env, agent, params, config['name'], checkpoint_path)
+        
+        # Save final model
+        final_path = os.path.join(config_folder, "models", "final.pt")
+        agent.save(final_path)
+        print(f"Saved final model to {final_path}")
+        
+        # Save training data
+        data_path = os.path.join(config_folder, "data", "training_data.pkl")
+        with open(data_path, 'wb') as f:
+            pickle.dump({
+                'results': training_results,
+                'params': params,
+                'config_name': config['name']
+            }, f)
+        print(f"Saved training data to {data_path}")
+        
+        env.close()
+        return config['name'], training_results
+        
+    except Exception as e:
+        print(f"\n[ERROR] Training failed for config {config_idx}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise  # Re-raise to ensure proper exit code
 
 
 if __name__ == "__main__":
@@ -531,7 +555,12 @@ if __name__ == "__main__":
             # Parallel training using multiprocessing
             print("Starting parallel training across multiple GPUs...")
             
-            mp.set_start_method('spawn', force=True)
+            # Set start method only if not already set
+            try:
+                mp.set_start_method('spawn')
+            except RuntimeError:
+                pass  # Already set
+            
             processes = []
             
             for i in range(min(num_configs, num_gpus)):
@@ -539,8 +568,11 @@ if __name__ == "__main__":
                 p.start()
                 processes.append(p)
             
-            for p in processes:
+            # Wait for all processes and check for errors
+            for i, p in enumerate(processes):
                 p.join()
+                if p.exitcode != 0:
+                    print(f"WARNING: Process {i} exited with code {p.exitcode}")
             
             print("\n[DONE] Parallel training complete!")
             
