@@ -10,7 +10,7 @@ gym.register_envs(ale_py)
 from dqn_training import DQN, preprocess_frame
 
 # Configuration
-MODEL_PATH = "saved_agents/Baseline/final.pt"  # Update with your model path
+MODEL_PATH = "saved_agents/final.pt"  # Update with your model path
 N_EPISODES = 20
 RENDER = True
 
@@ -34,7 +34,7 @@ def run_saved_agent(model_path, n_episodes=5, render=True):
     n_actions = env.action_space.n
     
     # Create network
-    policy_net = DQN(input_shape=(4, 80, 80), n_actions=n_actions, hidden_dim=512).to(device)
+    policy_net = DQN(input_shape=(4, 84, 84), n_actions=n_actions, hidden_dim=512).to(device)
     policy_net.load_state_dict(checkpoint['policy_net'])
     policy_net.eval()
     
