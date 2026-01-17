@@ -2,7 +2,4 @@ venv/
 __pycache__/
 *.pyc
 
-Taxi/__pycache__
-Taxi/saved_agents/
-Taxi/configs.py
 

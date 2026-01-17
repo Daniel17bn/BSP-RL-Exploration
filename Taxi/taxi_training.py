@@ -4,9 +4,7 @@ import seaborn as sns
 import pickle
 import gymnasium as gym
 from tqdm import tqdm
-from typing import NamedTuple
 
-from params import Params
 from configs import configs
 
 sns.set_theme()
